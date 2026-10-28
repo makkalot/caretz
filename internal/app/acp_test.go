@@ -405,7 +405,8 @@ func TestACPVerboseSessionDebugLog(t *testing.T) {
 func TestACPVerboseLogsProtocolLifecycleWithoutRequestContent(t *testing.T) {
 	tmp := t.TempDir()
 	rt := newTestACPRuntime(t, tmp, &acpMockProvider{})
-	rt.Logger.SetVerbosity(1)
+	// Per-request tracing is debug output; -v keeps only lifecycle and failures.
+	rt.Logger.SetVerbosity(2)
 	var logs bytes.Buffer
 	rt.Logger.SetSender(func(prefix, content string) {
 		fmt.Fprintf(&logs, "%s %s\n", prefix, content)

@@ -65,7 +65,7 @@ func (r *Registry) handleGrepToolCall(ctx context.Context, grepTool llm.ToolCall
 		limit = DefaultGrepLimit
 	}
 
-	r.logInfo("Grep tool called: pattern=%q path=%q limit=%d", args.Pattern, args.Path, limit)
+	r.logDebug("Grep tool called: pattern=%q path=%q limit=%d", args.Pattern, args.Path, limit)
 
 	cwd, err := r.workspaceDir()
 	if err != nil {
@@ -148,7 +148,7 @@ func (r *Registry) handleGrepToolCall(ctx context.Context, grepTool llm.ToolCall
 		output += "\n" + strings.Join(notices, "\n")
 	}
 
-	r.logInfo("Grep tool completed: %d matches", matchCount)
+	r.logDebug("Grep tool completed: %d matches", matchCount)
 	return llm.Message{Role: llm.RoleTool, Content: output, ToolCallID: grepTool.ID}, nil
 }
 

@@ -54,3 +54,8 @@ Use `OnContextEvent` for the model-facing conversation stream and
 processing, several event types on one channel, or session-lifecycle cleanup
 can use `lib/sessiontools`. See [Session storage](../sessions/storage.md) for
 how the two event logs are stored.
+
+The [coderun](https://github.com/makkalot/caretz/tree/main/examples/coderun)
+example streams context events to a browser over server-sent events. It also
+shows permission prompts to the user and answers them with
+`Session.ResolvePermission`.

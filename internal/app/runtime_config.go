@@ -47,6 +47,46 @@ type runtimeFlagValues struct {
 	Theme            string
 }
 
+// modelSummary is the -v line naming the model a session talks to; source
+// says where the choice came from ("--model", "resumed session", ...).
+func modelSummary(settings runtimeSettings, source string) string {
+	ref := cmp.Or(settings.ActiveModelRef, settings.Model)
+	var b strings.Builder
+	b.WriteString("model " + ref)
+	if source != "" {
+		b.WriteString(" (" + source + ")")
+	}
+	if settings.Model != "" && settings.Model != ref && !strings.HasSuffix(ref, "/"+settings.Model) {
+		b.WriteString(" id=" + settings.Model)
+	}
+	b.WriteString(" endpoint=" + cmp.Or(settings.BaseURL, "default"))
+	if settings.Protocol != "" {
+		b.WriteString(" protocol=" + settings.Protocol)
+	}
+	if settings.ReasoningEffort != "" {
+		b.WriteString(" reasoning=" + settings.ReasoningEffort)
+	}
+	if settings.ContextWindow > 0 {
+		fmt.Fprintf(&b, " ctx=%d", settings.ContextWindow)
+	}
+	return b.String()
+}
+
+// modelSource names where the session model came from, for modelSummary.
+// A model rule may still have replaced it; that prints its own notice.
+func modelSource(explicitSource string, restoredSession bool, settings runtimeSettings) string {
+	switch {
+	case explicitSource != "":
+		return explicitSource
+	case restoredSession:
+		return "resumed session"
+	case settings.ActiveModelRef != "":
+		return "config activeModel"
+	default:
+		return "default"
+	}
+}
+
 type runtimeSettings struct {
 	APIKey           string
 	BaseURL          string
@@ -245,6 +285,9 @@ func (r subagentModelResolver) ResolveSubagentModel(ctx context.Context, request
 	var logf func(string, ...interface{})
 	if r.logger != nil {
 		logf = r.logger.Info
+		if !request.ValidateOnly {
+			r.logger.Info("subagent %s %s", cmp.Or(request.Name, "-"), modelSummary(settings, ""))
+		}
 	}
 	provider := llm.NewOpenAIProviderWithOptions(settings.APIKey, settings.BaseURL, settings.Model, llm.OpenAIProviderOptions{
 		RequestTimeout:        r.llmTimeout,

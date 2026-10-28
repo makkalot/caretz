@@ -65,7 +65,7 @@ func (r *Runtime) Wake(ctx context.Context, channelID string) error {
 	if err != nil {
 		return err
 	}
-	r.logInfo("waking conversation worker: channel=%s", channelID)
+	r.logDebug("waking conversation worker: channel=%s", channelID)
 	worker.Wake()
 	return nil
 }
@@ -125,7 +125,7 @@ func (r *Runtime) worker(ctx context.Context, channelID string) (*worker, error)
 	if err != nil {
 		return nil, err
 	}
-	r.logInfo("created conversation worker: channel=%s", channelID)
+	r.logDebug("created conversation worker: channel=%s", channelID)
 	worker := newWorker(ctx, channelID, session, r)
 	r.workers[channelID] = worker
 	return worker, nil
@@ -134,6 +134,19 @@ func (r *Runtime) worker(ctx context.Context, channelID string) (*worker, error)
 func (r *Runtime) logInfo(format string, args ...interface{}) {
 	if r.logger != nil {
 		r.logger.Info(format, args...)
+	}
+}
+
+// logDebug sends worker lifecycle detail to loggers that have a Debug level;
+// a Logger with only Info drops it.
+func (r *Runtime) logDebug(format string, args ...interface{}) {
+	if r == nil {
+		return
+	}
+	if debugLogger, ok := r.logger.(interface {
+		Debug(format string, args ...interface{})
+	}); ok {
+		debugLogger.Debug(format, args...)
 	}
 }
 
@@ -204,11 +217,11 @@ func (w *worker) drain() {
 		w.logInfo("failed to load pending messages: channel=%s error=%v", w.channel, err)
 		return
 	}
-	w.logInfo("draining conversation worker: channel=%s pending=%d", w.channel, len(pending))
+	w.runtime.logDebug("draining conversation worker: channel=%s pending=%d", w.channel, len(pending))
 	for _, event := range pending {
 		user, decodeErr := eventing.DecodeLogMessage(event)
 		if decodeErr == nil {
-			w.logInfo("processing pending message: channel=%s message_id=%s", w.channel, user.MessageID)
+			w.runtime.logDebug("processing pending message: channel=%s message_id=%s", w.channel, user.MessageID)
 		}
 		var processErr error
 		for attempt := 0; attempt < 3; attempt++ {

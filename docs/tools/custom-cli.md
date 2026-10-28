@@ -91,5 +91,9 @@ go build -o my-caretz .
 - Handlers run in your process with your permissions, not in the Bash sandbox.
   Check inputs before touching files, networks, or credentials.
 
+The [git-caretz-review](https://github.com/makkalot/caretz/tree/main/examples/git-caretz-review)
+example has real-world tools of this kind. They run a fixed, read-only `git`
+command and validate the model's arguments before using them.
+
 For replacing the interactive UI or adding a transport, see
 [Build on the CLI](../extending-cli/_index.md).

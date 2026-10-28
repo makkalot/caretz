@@ -37,7 +37,7 @@
 <section class="capabilities">
   <div class="section-heading wide-heading">
     <div><p class="eyebrow">More than a model wrapper</p><h2>Small core.<br>Serious workflow.</h2></div>
-    <p>Caretz combines the pieces needed for sustained coding work without turning them into a large runtime stack. The core module depends only on the Go standard library and <code>golang.org/x</code>, so you can copy the source to an offline machine, build it, and run it against your own GPU. Its compaction and task design grew from real use with local 27B Qwen models on a home RTX 3090, while the rest of the harness stays useful with any compatible provider.</p>
+    <p>Caretz combines the pieces needed for sustained coding work without turning them into a large runtime stack. It is built local-first: it grew from real use with 27B Qwen models on a home RTX 3090, and you can copy the source to an offline machine, build it, and run it against your own GPU. Hosted providers work too, but they never run by accident: model rules keep private directories on local models, and Caretz asks before a cloud model touches a directory no rule covers.</p>
   </div>
   <div class="capabilities-grid">
     <article><h3>Long-running sessions</h3><p>Persist, resume, inspect, and repair sessions while repeated compaction keeps limited context useful.</p></article>

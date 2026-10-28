@@ -1,0 +1,14 @@
+{
+  "profiles": {
+    "general": {
+      "tools": ["Read", "Write", "Edit", "Ls", "Find", "Grep", "Bash"],
+      "sandbox": {
+        "networkAllowlist": [],
+        "unrestrictedNetwork": false,
+        "allowLoopback": false,
+        "allowDocker": false,
+        "askSandboxOff": false
+      }
+    }
+  }
+}

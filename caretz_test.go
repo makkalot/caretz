@@ -50,6 +50,85 @@ func (p *fakeProvider) GetModel() string {
 
 func (p *fakeProvider) GetBaseURL() string { return "" }
 
+type deltaProvider struct{ fakeProvider }
+
+func (p *deltaProvider) Chat(_ string, _ []llm.Message, _ []llm.ToolDefinition, onDelta func(string)) (llm.Response, error) {
+	onDelta("hel")
+	onDelta("lo")
+	return llm.Response{Content: "hello"}, nil
+}
+
+func TestSessionAssistantDeltaHandler(t *testing.T) {
+	client, err := caretz.NewClient(context.Background(), caretz.ClientOptions{
+		Provider: &deltaProvider{}, WorkspaceDir: t.TempDir(), ToolMode: caretz.ToolModeNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	session, err := client.NewSession("stream", caretz.SessionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	session.SetAssistantDeltaHandler(func(delta string, clear bool) {
+		if clear {
+			text = ""
+		}
+		text += delta
+	})
+	if _, err := session.Run(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if text != "hello" {
+		t.Fatalf("live text = %q", text)
+	}
+	session.SetAssistantDeltaHandler(nil)
+	if _, err := session.Run(context.Background(), "again"); err != nil {
+		t.Fatal(err)
+	}
+	if text != "hello" {
+		t.Fatalf("removed handler was called: %q", text)
+	}
+	var nilSession *caretz.Session
+	nilSession.SetAssistantDeltaHandler(nil)
+}
+
+func TestSessionRunsCommandWithoutModel(t *testing.T) {
+	provider := &fakeProvider{}
+	client, err := caretz.NewClient(context.Background(), caretz.ClientOptions{
+		Provider: provider, WorkspaceDir: t.TempDir(),
+		Sandbox: caretz.SandboxOptions{Disabled: true}, EnabledTools: map[string]bool{"Bash": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	session, err := client.NewSession("command", caretz.SessionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := session.RunCommandWithPermissions(context.Background(), "printf hello; printf problem >&2; exit 7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stdout != "hello" || result.Stderr != "problem" || result.ExitCode != 7 {
+		t.Fatalf("command result = %+v", result)
+	}
+	if provider.calls != 0 || len(session.Messages()) != 0 {
+		t.Fatal("manual command made a model call or changed conversation history")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := session.RunCommandWithPermissions(ctx, "printf should-not-run"); err == nil {
+		t.Fatal("cancelled context was ignored")
+	}
+	var nilSession *caretz.Session
+	if _, err := nilSession.RunCommandWithPermissions(context.Background(), "true"); err == nil {
+		t.Fatal("nil session was accepted")
+	}
+}
+
 func TestClientRunUsesDirectSessionAPI(t *testing.T) {
 	provider := &fakeProvider{resp: "done"}
 	client, err := caretz.NewClient(context.Background(), caretz.ClientOptions{

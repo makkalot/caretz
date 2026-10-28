@@ -62,7 +62,7 @@ func (r *Registry) handleBashToolCall(ctx context.Context, bashTool llm.ToolCall
 		return llm.Message{}, err
 	}
 
-	r.logInfo("Bash tool called: %s", command)
+	r.logDebug("Bash tool called: %s", command)
 
 	cwd, err := r.workspaceDir()
 	if err != nil {
@@ -95,7 +95,7 @@ func (r *Registry) handleBashToolCall(ctx context.Context, bashTool llm.ToolCall
 			r.logInfo("Bash tool sandbox error: %s", stderr)
 			failed = llm.Message{Role: llm.RoleTool, Content: TruncateBashOutput(stdout+"sandbox error: "+stderr, MaxBashOutputBytes), ToolCallID: bashTool.ID}
 		} else {
-			r.logInfo("Bash tool error: %v", err)
+			r.logDebug("Bash tool error: %v", err)
 			failed = llm.Message{Role: llm.RoleTool, Content: TruncateBashOutput(stdout+fmt.Sprintf("error: %v", err), MaxBashOutputBytes), ToolCallID: bashTool.ID}
 		}
 		if escalation := r.sandboxOffEscalation(cwd, command, stdout, stderr, args.Background, failed, false); escalation != nil {
@@ -104,7 +104,7 @@ func (r *Registry) handleBashToolCall(ctx context.Context, bashTool llm.ToolCall
 		return failed, nil
 	}
 
-	r.logInfo("Bash tool completed: %d bytes output", len(stdout))
+	r.logDebug("Bash tool completed: %d bytes output", len(stdout))
 	result := llm.Message{Role: llm.RoleTool, Content: TruncateBashOutput(stdout, MaxBashOutputBytes), ToolCallID: bashTool.ID}
 	if escalation := r.sandboxOffEscalation(cwd, command, stdout, stderr, args.Background, result, true); escalation != nil {
 		return llm.Message{}, escalation

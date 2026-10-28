@@ -280,12 +280,12 @@ func newAgentSessionWithContextManager(adapterType, channelId string, params Ses
 	if debugManager, ok := contextManager.(interface {
 		SetDebugLogger(func(format string, args ...interface{}))
 	}); ok {
-		debugManager.SetDebugLogger(logger.Info)
+		debugManager.SetDebugLogger(logger.Debug)
 	}
 
 	// Restore llmMessages using the context manager so implementations can
 	// decide whether summaries, trimming, or raw history should be replayed.
-	logger.Info("Restoring context: adapter=%s session=%s context_window=%d reserved_tokens=%d keep_recent_tokens=%d summary_tokens=%d", adapterType, channelId, contextWindow, reservedTokens, keepRecentTokens, contextManager.SummaryTokens())
+	logger.Debug("Restoring context: adapter=%s session=%s context_window=%d reserved_tokens=%d keep_recent_tokens=%d summary_tokens=%d", adapterType, channelId, contextWindow, reservedTokens, keepRecentTokens, contextManager.SummaryTokens())
 	llmMessages, err := contextManager.RestoreContext(channelId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to restore context: %w", err)
@@ -294,7 +294,9 @@ func newAgentSessionWithContextManager(adapterType, channelId string, params Ses
 	if err != nil {
 		return nil, fmt.Errorf("failed to restore task state: %w", err)
 	}
-	logger.Info("Restored context: adapter=%s session=%s messages=%d estimated_tokens=%d", adapterType, channelId, len(llmMessages), contextManager.EstimateRawTokens(llmMessages, llmToolDefinitions))
+	if len(llmMessages) > 0 {
+		logger.Info("context restored %d messages, ~%d tokens", len(llmMessages), contextManager.EstimateRawTokens(llmMessages, llmToolDefinitions))
+	}
 
 	loop := NewAgentLoop(AgentLoopParams{
 		Logger:                     logger,
@@ -462,7 +464,7 @@ func (a *AgentSession) processUserEventUntilStop(ctx context.Context, e *types.E
 			if returnErr == nil && recovered == nil {
 				returnErr = fmt.Errorf("failed to append agent turn completed event: %w", err)
 			} else {
-				a.logger.Info("Failed to append agent turn completed event: %v", err)
+				a.logger.Warn("Failed to append agent turn completed event: %v", err)
 			}
 		}
 		if recovered != nil {
@@ -475,7 +477,7 @@ func (a *AgentSession) processUserEventUntilStop(ctx context.Context, e *types.E
 	}
 
 	if !converted {
-		a.logger.Info("event is not a user message, skipping context conversion: %v", e)
+		a.logger.Debug("event is not a user message, skipping context conversion: %v", e)
 		return nil, nil
 	}
 
@@ -527,7 +529,7 @@ func (a *AgentSession) processUserEventUntilStop(ctx context.Context, e *types.E
 	if a.contextManager != nil {
 		pendingMessages := append(a.activeMessages(), *newLLMmessage)
 		estimatedTokens := a.contextManager.EstimateTokens(pendingMessages, a.llmToolDefinitions)
-		a.logger.Info("Preflight context estimate: %d tokens (threshold: %d, multiplier: %.2f)",
+		a.logger.Debug("Preflight context estimate: %d tokens (threshold: %d, multiplier: %.2f)",
 			estimatedTokens, a.contextManager.ContextWindow()-a.contextManager.ReservedTokens(), a.contextManager.TokenEstimateMultiplier())
 		if a.contextManager.IsCompactionRequired(pendingMessages, a.llmToolDefinitions) {
 			result, err := a.compactContext(ctx, newEvent.Originator.ID, e.Originator.ID, e.Originator.Version, "preflight", newLLMmessage.Content)
@@ -778,12 +780,13 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 	summary := turn.Summary
 	stop := turn.Stop
 	provider := a.currentProvider()
-	a.logger.Info("Starting LLM loop with model: %s", provider.GetModel())
-	a.logger.Info("API endpoint: %s", provider.GetBaseURL())
-	if reasoningProvider, ok := provider.(llm.ReasoningProvider); ok {
-		if reasoningEffort := strings.TrimSpace(reasoningProvider.ReasoningEffort()); reasoningEffort != "" {
-			a.logger.Info("Reasoning effort: %s", reasoningEffort)
-		}
+	a.logModel(provider)
+	// Schedules, subagents and the main session can run at once, so every
+	// -v line from this loop names the model it belongs to.
+	modelTag := "[" + provider.GetModel() + "]"
+	requestKind := modelTag + " llm"
+	if summary {
+		requestKind = modelTag + " summary"
 	}
 
 	var cumulativePrompt, cumulativeCompletion, cumulativeTotal int64
@@ -820,7 +823,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 				if result != nil && result.Compacted {
 					messages = a.activeMessages()
 					a.setActiveMessages(messages)
-					a.logger.Info("Iteration %d: compacted context before LLM request: before=%d after=%d",
+					a.logger.Debug("Iteration %d: compacted context before LLM request: before=%d after=%d",
 						iteration, result.BeforeTokens, result.AfterTokens)
 				} else {
 					estimatedTokens := a.contextManager.EstimateTokens(messages, toolDefs)
@@ -835,7 +838,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 						if activeResult != nil && activeResult.Compacted {
 							messages = a.activeMessages()
 							a.setActiveMessages(messages)
-							a.logger.Info("Iteration %d: active tool-chain compacted context before LLM request: before=%d after=%d",
+							a.logger.Debug("Iteration %d: active tool-chain compacted context before LLM request: before=%d after=%d",
 								iteration, activeResult.BeforeTokens, activeResult.AfterTokens)
 						}
 					}
@@ -843,15 +846,16 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			}
 		}
 
-		a.logger.Info("Iteration %d: sending request to LLM", iteration)
-		a.logger.Debug("Current messages count: %d", len(messages))
-
 		requestEstimate := 0
 		if a.contextManager != nil && !summary {
 			requestEstimate = a.contextManager.EstimateRawTokens(messages, toolDefs)
-			a.logger.Info("Iteration %d: raw request tokens=%d calibrated=%d multiplier=%.2f",
-				iteration, requestEstimate, a.contextManager.EstimateTokens(messages, toolDefs), a.contextManager.TokenEstimateMultiplier())
+			a.logger.Info("%s #%d → ~%d tokens msgs=%d", requestKind, iteration, a.contextManager.EstimateTokens(messages, toolDefs), len(messages))
+			a.logger.Debug("Iteration %d: raw request tokens=%d multiplier=%.2f",
+				iteration, requestEstimate, a.contextManager.TokenEstimateMultiplier())
+		} else {
+			a.logger.Info("%s #%d → msgs=%d", requestKind, iteration, len(messages))
 		}
+		requestStart := time.Now()
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -879,6 +883,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			return nil, ctx.Err()
 		}
 		if err != nil {
+			a.logger.Info("%s #%d ← %s error: %v", requestKind, iteration, formatDuration(time.Since(requestStart)), err)
 			if !summary {
 				a.publishAssistantDelta("", true)
 			}
@@ -942,11 +947,13 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 		}
 		contextSizeRecoveries = 0
 		result = normalizeLLMResponse(result)
+		a.logger.Info("%s #%d ← %s prompt=%d completion=%d %s", requestKind, iteration, formatDuration(time.Since(requestStart)),
+			result.Usage.PromptTokens, result.Usage.CompletionTokens, describeResponse(result))
 		if a.contextManager != nil && !summary && requestEstimate > 0 && result.Usage.PromptTokens > 0 {
 			beforeMultiplier := a.contextManager.TokenEstimateMultiplier()
 			a.contextManager.UpdateTokenCalibration(requestEstimate, result.Usage.PromptTokens)
 			afterMultiplier := a.contextManager.TokenEstimateMultiplier()
-			a.logger.Info("Iteration %d: actual prompt tokens=%d estimated=%d multiplier %.2f -> %.2f",
+			a.logger.Debug("Iteration %d: actual prompt tokens=%d estimated=%d multiplier %.2f -> %.2f",
 				iteration, result.Usage.PromptTokens, requestEstimate, beforeMultiplier, afterMultiplier)
 		}
 
@@ -965,7 +972,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 					messages = a.activeMessages()
 					a.setActiveMessages(messages)
 					consecutiveEmptyResponses = 0
-					a.logger.Info("Iteration %d: active tool-chain compacted context after empty response: before=%d after=%d",
+					a.logger.Debug("Iteration %d: active tool-chain compacted context after empty response: before=%d after=%d",
 						iteration, activeResult.BeforeTokens, activeResult.AfterTokens)
 					continue
 				}
@@ -973,7 +980,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			if consecutiveEmptyResponses >= maxConsecutiveEmptyLLMResponses {
 				return nil, fmt.Errorf("LLM returned empty response %d consecutive times", consecutiveEmptyResponses)
 			}
-			a.logger.Info("Iteration %d: LLM returned empty response (no content, no tool calls), retrying", iteration)
+			a.logger.Warn("Iteration %d: LLM returned empty response (no content, no tool calls), retrying", iteration)
 			continue
 		}
 		consecutiveEmptyResponses = 0
@@ -984,8 +991,6 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 		messages = append(messages, result.Message)
 
 		if len(result.ToolCalls) == 0 {
-			a.logger.Info("Iteration %d: LLM returned content (no tool calls)", iteration)
-
 			// Update llmMessages BEFORE emitting the event so that TUI handlers
 			// see the latest context when calling EstimatedContextTokens().
 			if !summary {
@@ -1002,7 +1007,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 
 			_, err = a.contextSessionStore.AppendAgentResponse(agentResponseEvent)
 			if err != nil {
-				a.logger.Info("Failed to append agent response to context store: %v", err)
+				a.logger.Warn("Failed to append agent response to context store: %v", err)
 			}
 
 			return &result, nil
@@ -1014,15 +1019,15 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 		}
 		agentMessageEvent := eventing.NewLLMAgentMessageWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, result.Message, result.Usage, cumulativeTotal, result.ReasoningSummary, a.tokenEstimateMultiplier())
 		if _, err := a.contextSessionStore.AppendAgentMessage(agentMessageEvent); err != nil {
-			a.logger.Info("Failed to append agent message to context store: %v", err)
+			a.logger.Warn("Failed to append agent message to context store: %v", err)
 		}
 
 		for _, tc := range result.ToolCalls {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			a.logger.Info("Iteration %d: processing tool call: %s (id: %s)", iteration, tc.Name, tc.ID)
-			a.logger.Debug("Tool arguments: %s", tc.Arguments)
+			a.logger.Debug("Iteration %d: tool call %s (id: %s) arguments: %s", iteration, tc.Name, tc.ID, tc.Arguments)
+			toolStart := time.Now()
 
 			toolCtx := ctx
 			grantedPermissions := map[string]bool{}
@@ -1080,7 +1085,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 					}
 					return nil, errors.Join(ctx.Err(), err)
 				}
-				a.logger.Info("Tool call error: %v", err)
+				a.logger.Info("%s tool %s error %s %s: %v", modelTag, tc.Name, formatDuration(time.Since(toolStart)), toolArgSummary(tc.Arguments), err)
 				contentErr := fmt.Sprintf("error: %v", err)
 				toolCallMessage := llm.Message{
 					Role:       llm.RoleTool,
@@ -1094,7 +1099,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 				}
 				toolCallResultErrEvent := eventing.NewLLMToolCallResult(originatorID, parentOriginatorID, parentOriginatorVersion, tc, contentErr, "", toolCallMessage)
 				if _, err := a.contextSessionStore.AppendToolResult(toolCallResultErrEvent); err != nil {
-					a.logger.Info("Failed to append tool call result to context store: %v", err)
+					a.logger.Warn("Failed to append tool call result to context store: %v", err)
 				}
 				if stopRequested(stop) {
 					return nil, ErrGracefulStop
@@ -1102,6 +1107,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 				continue
 			}
 
+			a.logger.Info("%s tool %s ok %s %dB %s", modelTag, tc.Name, formatDuration(time.Since(toolStart)), len(toolCallRes.Content), toolArgSummary(tc.Arguments))
 			messages = append(messages, toolCallRes)
 			if !summary {
 				a.setActiveMessages(messages)
@@ -1109,7 +1115,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			// save point, save the success tool call, might need to also save into a file if output too big
 			toolCallResultEvent := eventing.NewLLMToolCallResult(originatorID, parentOriginatorID, parentOriginatorVersion, tc, "", "", toolCallRes)
 			if _, err := a.contextSessionStore.AppendToolResult(toolCallResultEvent); err != nil {
-				a.logger.Info("Failed to append tool call result to context store: %v", err)
+				a.logger.Warn("Failed to append tool call result to context store: %v", err)
 			}
 			if stopRequested(stop) {
 				return nil, ErrGracefulStop
@@ -1119,8 +1125,75 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 		if stopRequested(stop) {
 			return nil, ErrGracefulStop
 		}
-		a.logger.Info("Iteration %d: %d tool response(s) added, continuing loop", iteration, len(result.ToolCalls))
 	}
+}
+
+// logModel names the model at Info only when it changes mid-session; the
+// startup line already named the first one.
+func (a *AgentLoop) logModel(provider llm.Provider) {
+	desc := provider.GetModel() + " endpoint=" + provider.GetBaseURL()
+	if reasoningProvider, ok := provider.(llm.ReasoningProvider); ok {
+		if reasoningEffort := strings.TrimSpace(reasoningProvider.ReasoningEffort()); reasoningEffort != "" {
+			desc += " reasoning=" + reasoningEffort
+		}
+	}
+	a.llmProviderMu.Lock()
+	previous := a.loggedModel
+	a.loggedModel = desc
+	a.llmProviderMu.Unlock()
+	switch {
+	case previous == "":
+		a.logger.Debug("model %s", desc)
+	case previous != desc:
+		a.logger.Info("model switched to %s", desc)
+	}
+}
+
+func describeResponse(result llm.Response) string {
+	if len(result.ToolCalls) == 0 {
+		return "done"
+	}
+	names := make([]string, 0, len(result.ToolCalls))
+	for _, tc := range result.ToolCalls {
+		names = append(names, tc.Name)
+	}
+	return "tools=[" + strings.Join(names, ", ") + "]"
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Millisecond {
+		return "<1ms"
+	}
+	if d < time.Second {
+		return d.Round(time.Millisecond).String()
+	}
+	return d.Round(100 * time.Millisecond).String()
+}
+
+// toolArgSummaryKeys are the argument fields that best identify a tool call,
+// in the order they are tried.
+var toolArgSummaryKeys = []string{"command", "file_path", "path", "pattern", "url", "query", "name", "description"}
+
+// toolArgSummary picks one identifying argument for the -v tool line, cut to
+// a single short line; full arguments are logged at -vv.
+func toolArgSummary(arguments string) string {
+	var args map[string]any
+	if json.Unmarshal([]byte(arguments), &args) != nil {
+		return ""
+	}
+	for _, key := range toolArgSummaryKeys {
+		value, ok := args[key].(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		value = strings.Join(strings.Fields(value), " ")
+		const maxLen = 80
+		if runes := []rune(value); len(runes) > maxLen {
+			value = string(runes[:maxLen-1]) + "…"
+		}
+		return value
+	}
+	return ""
 }
 
 func (a *AgentLoop) tokenEstimateMultiplier() float64 {
@@ -1145,7 +1218,7 @@ func (a *AgentLoop) publishLLMRetry(originatorID, parentOriginatorID string, par
 	}
 	event := eventing.NewLLMRequestRetry(originatorID, parentOriginatorID, parentOriginatorVersion, info.Attempt, info.Delay, info.RateLimited, message, errStr)
 	if err := a.contextSessionStore.PublishEvent(event); err != nil {
-		a.logger.Info("Failed to publish LLM retry event: %v", err)
+		a.logger.Warn("Failed to publish LLM retry event: %v", err)
 	}
 }
 
@@ -1287,14 +1360,14 @@ func (a *AgentLoop) publishLLMReasoning(originatorID, parentOriginatorID string,
 	}
 	event := eventing.NewLLMReasoningDelta(originatorID, parentOriginatorID, parentOriginatorVersion, update.Delta, update.Text, update.Done)
 	if err := a.contextSessionStore.PublishEvent(event); err != nil {
-		a.logger.Info("Failed to publish LLM reasoning update: %v", err)
+		a.logger.Warn("Failed to publish LLM reasoning update: %v", err)
 	}
 }
 
 func (a *AgentLoop) publishLLMReasoningStarted(originatorID, parentOriginatorID string, parentOriginatorVersion uint64) {
 	event := eventing.NewLLMReasoningStarted(originatorID, parentOriginatorID, parentOriginatorVersion)
 	if err := a.contextSessionStore.PublishEvent(event); err != nil {
-		a.logger.Info("Failed to publish LLM reasoning start: %v", err)
+		a.logger.Warn("Failed to publish LLM reasoning start: %v", err)
 	}
 }
 

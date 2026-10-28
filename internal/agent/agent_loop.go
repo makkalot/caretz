@@ -27,12 +27,15 @@ type AgentTurn struct {
 // LLM messages, compaction policy, and task state. AgentSession owns identity,
 // durable event logs, and session lifecycle around this loop.
 type AgentLoop struct {
-	systemPrompt          string
-	llmMessagesMu         sync.RWMutex
-	llmMessages           []llm.Message
-	llmToolDefinitions    []llm.ToolDefinition
-	llmProviderMu         sync.RWMutex
-	llmProvider           llm.Provider
+	systemPrompt       string
+	llmMessagesMu      sync.RWMutex
+	llmMessages        []llm.Message
+	llmToolDefinitions []llm.ToolDefinition
+	llmProviderMu      sync.RWMutex
+	llmProvider        llm.Provider
+	// loggedModel is the model+endpoint last named in the log, so -v shows a
+	// switch once instead of repeating the model on every turn.
+	loggedModel           string
 	toolRegistryMu        sync.RWMutex
 	toolRegistry          *tools.Registry
 	ownsSessionExecution  bool

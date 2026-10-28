@@ -87,4 +87,8 @@ replacing those interfaces.
 
 `cli.Run` owns every argument passed to it. If your executable defines its own
 flags or subcommands, parse and remove those before passing the remaining
-arguments to `cli.Run`.
+arguments to `cli.Run`. The
+[git-caretz-review](https://github.com/makkalot/caretz/tree/main/examples/git-caretz-review)
+example does this. It is a `git caretz-review main` subcommand that adds
+read-only diff tools and a review rubric through `SystemPromptSuffix`, then
+hands every other flag to caretz.

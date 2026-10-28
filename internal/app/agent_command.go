@@ -96,6 +96,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 
 	adapterType := selectedAdapter
 	sessionRuntimeFile := sessionRuntimePath(sessionsDir, adapterType, sessionID)
+	restoredSession := false
 	if !baseFlags.Incognito && strings.TrimSpace(baseFlags.Model) == "" && strings.TrimSpace(os.Getenv("OPENAI_API_MODEL")) == "" {
 		state, found, err := loadSessionRuntime(sessionRuntimeFile)
 		if err != nil {
@@ -111,6 +112,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 			applyExplicitSessionRuntimeOverrides(&restored, runtimeConfig, baseFlags, os.Getenv)
 			runtimeConfig = restored
 			rt.Settings = restored
+			restoredSession = true
 		}
 	}
 
@@ -165,13 +167,16 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 	}
 	// The built-in TUI shows the rule in its banner and replays recorded
 	// switches, so only prompt mode and external runners print them here.
+	// Quiet one-shot runs leave them out; they are still recorded in the session.
 	builtinTUI := prompt == "" && opts.InteractiveRunner == nil
-	if !builtinTUI {
+	quietPrompt := prompt != "" && logger.Verbosity() == 0
+	if !builtinTUI && !quietPrompt {
 		rt.printModelNotices(stderr)
 	}
-	logger.Info("Using session: %s (adapter: %s)", sessionID, adapterType)
+	logger.Info("%s", modelSummary(runtimeConfig, modelSource(rt.ExplicitModelSource, restoredSession, runtimeConfig)))
+	logger.Info("session %s adapter=%s workspace=%s", sessionID, adapterType, cwd)
 	if prompt == "" && adapterSet && adapterType != "tui" {
-		logger.Info("Debug-attaching TUI to %s session %s; current directory is the tool workspace", adapterType, sessionID)
+		logger.Debug("Debug-attaching TUI to %s session %s; current directory is the tool workspace", adapterType, sessionID)
 	}
 
 	if !baseFlags.Incognito {
@@ -339,7 +344,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		},
 		Switcher: modelSwitcher,
 	}
-	logger.Info("Preparing command registry")
+	logger.Debug("Preparing command registry")
 	slashCommandRegistry, err := newSlashCommandRegistry(cwd, agentsDirs, rt.Profile.Agents, rt.FileConfig.Profile, modelsCommand)
 	if err != nil {
 		panic(fmt.Sprintf("failed to create command registry: %v", err))
@@ -382,10 +387,16 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		return 0
 	}
 
-	cliOutput := output.NewCLIOutput(runtimeConfig.OutputMode)
-	cliOutput.SetMessageRenderers(opts.MessageRenderers)
-	if err := cliOutput.RegisterHandlers(session); err != nil {
-		panic(fmt.Sprintf("failed to register cli output handlers: %v", err))
+	// One-shot mode prints only the answer, like other harnesses' -p; -v adds
+	// the interactive activity rendering on stderr alongside the logs.
+	if logger.Verbosity() > 0 {
+		cliOutput := output.NewCLIOutput(runtimeConfig.OutputMode)
+		cliOutput.SetMessageRenderers(opts.MessageRenderers)
+		if err := cliOutput.RegisterHandlers(session); err != nil {
+			panic(fmt.Sprintf("failed to register cli output handlers: %v", err))
+		}
+	} else if err := output.NewPromptOutput(stdout).RegisterHandlers(session); err != nil {
+		panic(fmt.Sprintf("failed to register prompt output handlers: %v", err))
 	}
 
 	if result, handled, err := slashCommandRegistry.Execute(context.Background(), session, prompt); handled {

@@ -26,9 +26,26 @@ func TestLoggerInfoIncludesTimestamp(t *testing.T) {
 	if gotPrefix != "[INFO]" {
 		t.Fatalf("prefix = %q, want [INFO]", gotPrefix)
 	}
-	want := "2026-08-30T10:34:56.000000789Z hello world"
+	want := "12:34:56.000 hello world"
 	if gotContent != want {
 		t.Fatalf("content = %q, want %q", gotContent, want)
+	}
+}
+
+func TestLoggerInfoOnStderrHasNoLevelTag(t *testing.T) {
+	logger := New()
+	logger.SetVerbosity(1)
+	logger.now = func() time.Time {
+		return time.Date(2026, 8, 30, 1, 2, 3, 0, time.UTC)
+	}
+
+	got := captureStderr(t, func() {
+		logger.Info("model gpt")
+	})
+
+	want := "01:02:03.000 model gpt\n"
+	if got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
 	}
 }
 
@@ -43,7 +60,7 @@ func TestLoggerDebugIncludesTimestampOnStderr(t *testing.T) {
 		logger.Debug("details=%d", 42)
 	})
 
-	want := "[DEBUG] 2026-08-30T01:02:03Z details=42\n"
+	want := "[DEBUG] 01:02:03.000 details=42\n"
 	if got != want {
 		t.Fatalf("stderr = %q, want %q", got, want)
 	}
@@ -59,7 +76,7 @@ func TestLoggerWarnIsAlwaysVisible(t *testing.T) {
 		logger.Warn("reduced isolation")
 	})
 
-	want := "[WARN] 2026-08-30T01:02:03Z reduced isolation\n"
+	want := "[WARN] 01:02:03.000 reduced isolation\n"
 	if got != want {
 		t.Fatalf("stderr = %q, want %q", got, want)
 	}

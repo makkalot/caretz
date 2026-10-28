@@ -102,3 +102,9 @@ choosing stable channel IDs, creating per-channel workspaces, durably appending
 incoming messages before processing them, delivering responses, retrying where
 appropriate, and handling shutdown. `lib/conversation.Runtime` provides worker
 and retry coordination for event-driven transports.
+
+For a fuller adapter, see
+[vault](https://github.com/makkalot/caretz/tree/main/examples/vault). It is an
+assistant for a folder of Markdown notes, with `capture`, `ask`, and `serve`
+commands. Adapter sessions come with caretz's scheduler tools, so `serve` gets
+its daily plan and weekly review just by asking the agent to schedule them.

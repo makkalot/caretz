@@ -33,7 +33,7 @@ func (r *Registry) handleWriteToolCall(ctx context.Context, writeTool llm.ToolCa
 		return llm.Message{}, r.outsideRootPermission(PermissionPathWrite, filePath, reason, false)
 	}
 
-	r.logInfo("Write tool called: %s", args.FilePath)
+	r.logDebug("Write tool called: %s", args.FilePath)
 
 	// Ensure parent directories exist.
 	dir := filepath.Dir(filePath)
@@ -46,7 +46,7 @@ func (r *Registry) handleWriteToolCall(ctx context.Context, writeTool llm.ToolCa
 		return llm.Message{}, fmt.Errorf("writing file: %w", err)
 	}
 
-	r.logInfo("Write tool completed: %d bytes written to %s", contentLen, filePath)
+	r.logDebug("Write tool completed: %d bytes written to %s", contentLen, filePath)
 	result := fmt.Sprintf("%d bytes written to path %s", contentLen, args.FilePath)
 	return llm.Message{Role: llm.RoleTool, Content: result, ToolCallID: writeTool.ID}, nil
 }

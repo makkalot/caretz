@@ -80,7 +80,7 @@ func (a *AgentLoop) applyTaskUpdateWithStats(originatorID, parentOriginatorID st
 			events, accountingErr := a.ContextEvents(originatorID)
 			if accountingErr != nil {
 				if a.logger != nil {
-					a.logger.Info("Failed to calculate completed task statistics: %v", accountingErr)
+					a.logger.Warn("Failed to calculate completed task statistics: %v", accountingErr)
 				}
 			} else {
 				stats = aggregateTaskStats(events, input.ID)
@@ -104,7 +104,7 @@ func (a *AgentLoop) applyTaskUpdateWithStats(originatorID, parentOriginatorID st
 		snapshotEvent := eventing.NewTaskSnapshot(originatorID, parentOriginatorID, parentOriginatorVersion, a.taskState.Snapshot())
 		if _, err := a.contextSessionStore.AppendTaskEvent(snapshotEvent); err != nil {
 			if a.logger != nil {
-				a.logger.Info("Failed to append task snapshot: %v", err)
+				a.logger.Warn("Failed to append task snapshot: %v", err)
 			}
 		} else {
 			a.taskMutationsSinceSnapshot = 0

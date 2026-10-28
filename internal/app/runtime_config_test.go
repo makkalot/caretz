@@ -1303,3 +1303,53 @@ func TestDefaultSummaryTokensMain(t *testing.T) {
 		}
 	}
 }
+
+func TestModelSummaryNamesModelSourceAndEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings runtimeSettings
+		source   string
+		want     string
+	}{
+		{
+			name:     "configured provider model",
+			settings: runtimeSettings{ActiveModelRef: "openai/gpt-5", Model: "gpt-5", BaseURL: "https://api.openai.com/v1", Protocol: "responses", ReasoningEffort: "high", ContextWindow: 400000},
+			source:   "--model",
+			want:     "model openai/gpt-5 (--model) endpoint=https://api.openai.com/v1 protocol=responses reasoning=high ctx=400000",
+		},
+		{
+			name:     "alias resolving to another id",
+			settings: runtimeSettings{ActiveModelRef: "local/fast", Model: "qwen3-8b", BaseURL: "http://127.0.0.1:8080/v1"},
+			source:   "config activeModel",
+			want:     "model local/fast (config activeModel) id=qwen3-8b endpoint=http://127.0.0.1:8080/v1",
+		},
+		{
+			name:     "ad hoc model without endpoint",
+			settings: runtimeSettings{Model: "mock"},
+			want:     "model mock endpoint=default",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := modelSummary(tt.settings, tt.source); got != tt.want {
+				t.Fatalf("modelSummary() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModelSourcePrefersExplicitThenResumedThenConfig(t *testing.T) {
+	configured := runtimeSettings{ActiveModelRef: "openai/gpt-5"}
+	if got := modelSource("--model", true, configured); got != "--model" {
+		t.Fatalf("explicit source = %q", got)
+	}
+	if got := modelSource("", true, configured); got != "resumed session" {
+		t.Fatalf("resumed source = %q", got)
+	}
+	if got := modelSource("", false, configured); got != "config activeModel" {
+		t.Fatalf("config source = %q", got)
+	}
+	if got := modelSource("", false, runtimeSettings{Model: "mock"}); got != "default" {
+		t.Fatalf("default source = %q", got)
+	}
+}

@@ -61,9 +61,14 @@ func (l *Logger) log(minVerbosity int, prefix, format string, args ...interface{
 	if now == nil {
 		now = time.Now
 	}
-	text := now().UTC().Format(time.RFC3339Nano) + " " + fmt.Sprintf(format, args...)
+	text := now().Format("15:04:05.000") + " " + fmt.Sprintf(format, args...)
 	if sender != nil {
 		sender(prefix, text)
+		return
+	}
+	// Info is the default -v stream; only the unusual levels carry a tag.
+	if minVerbosity == 1 {
+		_, _ = fmt.Fprintln(os.Stderr, text)
 	} else {
 		_, _ = fmt.Fprintln(os.Stderr, prefix+" "+text)
 	}

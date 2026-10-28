@@ -452,6 +452,19 @@ func (s *Session) PendingPermissions() []PermissionRequest {
 	return s.inner.PendingPermissions()
 }
 
+// RunCommandWithPermissions executes a shell command in the session workspace
+// using its configured sandbox, without calling the model or adding conversation
+// messages. It waits for any active agent turn, supports proxy permissions through
+// PendingPermissions and ResolvePermission, and never retries outside the sandbox.
+// Cancel ctx to stop execution. Output is bounded and returned when the command
+// finishes; nonzero exits and timeouts are reported in the result, not as errors.
+func (s *Session) RunCommandWithPermissions(ctx context.Context, command string) (tools.VerificationResult, error) {
+	if s == nil || s.inner == nil {
+		return tools.VerificationResult{Command: command, ExitCode: -1}, fmt.Errorf("session is nil")
+	}
+	return s.inner.RunCommandWithPermissions(ctx, command)
+}
+
 func (s *Session) ResolvePermission(resolution PermissionResolution) error {
 	if s == nil || s.inner == nil {
 		return fmt.Errorf("session is nil")
@@ -499,6 +512,17 @@ func (s *Session) SubscribeContextEvents(eventTypes ...string) (eventing.Subscri
 		return nil, fmt.Errorf("session is nil")
 	}
 	return s.inner.SubscribeContextEvents(eventTypes...)
+}
+
+// SetAssistantDeltaHandler installs a live assistant text callback. A clear
+// event discards provisional text from the current provider attempt. The callback
+// runs on the model's streaming path and must return promptly; persisted context
+// events remain the source of truth. Pass nil to remove the handler.
+func (s *Session) SetAssistantDeltaHandler(handler func(delta string, clear bool)) {
+	if s == nil || s.inner == nil {
+		return
+	}
+	s.inner.SetAssistantDeltaHandler(handler)
 }
 
 func (s *Session) Close() error {

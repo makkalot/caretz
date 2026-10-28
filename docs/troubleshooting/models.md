@@ -59,8 +59,10 @@ the endpoint implements chat completions and tool calls. A server described as
 “OpenAI-compatible” may still omit tool calling, reasoning fields, streaming
 details, or usage data.
 
-Use `-vv` to see request attempts and the selected endpoint/model without
-printing the API key. Increase `--llm-timeout` for slow local models and use
+Use `-v` to see the selected model, where that choice came from (`--model`,
+`OPENAI_API_MODEL`, a resumed session, or config), its endpoint, and each
+request's timing and token counts, without printing the API key. `-vv` adds
+token-estimate calibration and full tool arguments. Increase `--llm-timeout` for slow local models and use
 `--llm-max-attempts 1` while diagnosing deterministic request errors.
 
 ## Local Setup Connection Test Fails

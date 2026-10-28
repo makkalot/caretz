@@ -4559,7 +4559,7 @@ func TestAgentSession_CompactNow_LogsUnsummarizableOverThresholdContext(t *testi
 	tmpDir := t.TempDir()
 	var logs []string
 	logger := log.New()
-	logger.SetVerbosity(1)
+	logger.SetVerbosity(2)
 	logger.SetSender(func(prefix, content string) {
 		logs = append(logs, prefix+" "+content)
 	})
@@ -4645,5 +4645,24 @@ func TestAgentSession_DisableContextManagerSkipsCompaction(t *testing.T) {
 	}
 	if len(session.GetContextMessages()) != 16 {
 		t.Fatalf("messages = %d, want raw history preserved", len(session.GetContextMessages()))
+	}
+}
+
+func TestToolArgSummaryPicksIdentifyingArgument(t *testing.T) {
+	tests := []struct {
+		arguments string
+		want      string
+	}{
+		{`{"command":"go test\n  ./internal/log","timeout":30}`, "go test ./internal/log"},
+		{`{"file_path":"internal/log/log.go","offset":10}`, "internal/log/log.go"},
+		{`{"pattern":"TODO","path":"internal"}`, "internal"},
+		{`{"limit":5}`, ""},
+		{`not json`, ""},
+		{`{"command":"` + strings.Repeat("x", 100) + `"}`, strings.Repeat("x", 79) + "…"},
+	}
+	for _, tt := range tests {
+		if got := toolArgSummary(tt.arguments); got != tt.want {
+			t.Fatalf("toolArgSummary(%q) = %q, want %q", tt.arguments, got, tt.want)
+		}
 	}
 }
