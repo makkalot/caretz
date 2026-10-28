@@ -6,4 +6,4 @@ replace github.com/makkalot/caretz => ../../..
 
 require github.com/makkalot/caretz v0.0.0-00010101000000-000000000000
 
-require golang.org/x/net v0.39.0 // indirect
+require golang.org/x/net v0.55.0 // indirect
