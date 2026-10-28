@@ -43,6 +43,7 @@ type Profile struct {
 	Tasks          Tasks          `json:"tasks"`
 	Goal           Goal           `json:"goal"`
 	Schedules      *Schedules     `json:"schedules"`
+	Peers          *Peers         `json:"peers"`
 	Output         Output         `json:"output"`
 	Plan           *bool          `json:"plan"`
 	Incognito      *bool          `json:"incognito"`
@@ -130,6 +131,24 @@ type Schedules struct {
 	Model     string `json:"model"`
 	Reasoning string `json:"reasoning"`
 	Limit     Limit  `json:"limit"`
+}
+
+// Peers picks the bot a plain interactive caretz runs as and arranges the
+// tabs --start-peers opens in Herdr or tmux. Bots no tab lists open in a tab
+// named "bots".
+type Peers struct {
+	// Main is the bot an interactive caretz runs as; empty or "root" keeps
+	// a root session.
+	Main string    `json:"main"`
+	Tabs []PeerTab `json:"tabs"`
+}
+
+// PeerTab is one tab (a tmux window) holding a pane per listed bot. Layout is
+// "rows", "columns", or empty for the multiplexer's default.
+type PeerTab struct {
+	Name   string   `json:"name"`
+	Bots   []string `json:"bots"`
+	Layout string   `json:"layout"`
 }
 
 type Sandbox struct {
@@ -874,6 +893,9 @@ func mergeProfile(base, override Profile) Profile {
 	if override.Schedules != nil {
 		base.Schedules = override.Schedules
 	}
+	if override.Peers != nil {
+		base.Peers = override.Peers
+	}
 	if strings.TrimSpace(override.Output.Mode) != "" {
 		base.Output.Mode = override.Output.Mode
 	}
@@ -1067,6 +1089,9 @@ func validate(cfg Config) error {
 		if err := validateSchedules(profile.Schedules, name); err != nil {
 			return err
 		}
+		if err := validatePeers(profile.Peers, name); err != nil {
+			return err
+		}
 	}
 	for providerKey, provider := range cfg.Provider {
 		if provider.Local != nil && *provider.Local && (provider.Options.BaseURL == nil || normalizeSetupBaseURL(*provider.Options.BaseURL) == "") {
@@ -1130,6 +1155,38 @@ func validateSchedules(schedules *Schedules, profile string) error {
 	} {
 		if limit.value != nil && *limit.value <= 0 {
 			return fmt.Errorf("config profiles.%s.schedules.limit.%s must be positive", profile, limit.field)
+		}
+	}
+	return nil
+}
+
+func validatePeers(peers *Peers, profile string) error {
+	if peers == nil {
+		return nil
+	}
+	tabs := map[string]bool{}
+	bots := map[string]string{}
+	for i, tab := range peers.Tabs {
+		name := strings.TrimSpace(tab.Name)
+		if name == "" {
+			return fmt.Errorf("config profiles.%s.peers.tabs[%d].name must not be empty", profile, i)
+		}
+		if tabs[name] {
+			return fmt.Errorf("config profiles.%s.peers.tabs: tab %q is listed twice", profile, name)
+		}
+		tabs[name] = true
+		if layout := strings.TrimSpace(tab.Layout); layout != "" && layout != "rows" && layout != "columns" {
+			return fmt.Errorf("config profiles.%s.peers.tabs[%d].layout must be rows or columns", profile, i)
+		}
+		for _, bot := range tab.Bots {
+			bot = strings.TrimSpace(bot)
+			if bot == "" {
+				return fmt.Errorf("config profiles.%s.peers.tabs[%d].bots must not contain empty names", profile, i)
+			}
+			if other, ok := bots[bot]; ok {
+				return fmt.Errorf("config profiles.%s.peers.tabs: bot %q is in both %q and %q", profile, bot, other, name)
+			}
+			bots[bot] = name
 		}
 	}
 	return nil

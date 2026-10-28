@@ -94,7 +94,7 @@ func TestRootHelpGroupsEveryFlag(t *testing.T) {
 		t.Fatalf("code=%d", code)
 	}
 	want := map[string][]string{
-		"Session and input":           {"adapter", "incognito", "p", "prompt-file", "s"},
+		"Session and input":           {"adapter", "incognito", "main-peer", "p", "prompt-file", "s", "start-peers"},
 		"Workspace and configuration": {"config-root", "profile", "workspace"},
 		"Model and context":           {"allow-model", "api-key", "base-url", "context-window", "keep-recent-tokens", "llm-max-attempts", "llm-timeout", "model", "no-model-discovery", "reasoning", "reserved-tokens", "summary-tokens"},
 		"Agent behavior":              {"disable-tool", "no-tasks", "system-prompt", "system-prompt-file", "tasks", "tools"},

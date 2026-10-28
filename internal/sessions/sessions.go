@@ -47,7 +47,7 @@ func List(baseDir string) ([]SessionInfo, error) {
 
 // ListWithOptions scans the sessions directory and returns discovered session metadata.
 func ListWithOptions(baseDir string, options ListOptions) ([]SessionInfo, error) {
-	adapters := []string{"cli", "tui", "slack", "telegram", "acp"}
+	adapters := []string{"cli", "tui", "slack", "telegram", "acp", "peer"}
 	var sessions []SessionInfo
 	subagentSessionIDs := make(map[string]bool)
 

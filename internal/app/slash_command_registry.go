@@ -80,8 +80,8 @@ func newSlashCommandRegistry(cwd string, agentsDirs, allowedAgents []string, pro
 		if allowed := resourceNameMap(allowedAgents); allowed != nil && !allowed[name] {
 			return false
 		}
-		_, err := subagents.LoadFromDirs(agentsDirs, name)
-		return err == nil
+		def, err := subagents.LoadFromDirs(agentsDirs, name)
+		return err == nil && !def.IsPeer()
 	}
 	registry.RunSubagent = (slashcmd.SubagentRunner{}).Run
 	return registry, nil

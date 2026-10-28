@@ -16,7 +16,10 @@ import (
 	"github.com/makkalot/caretz/internal/config"
 	"github.com/makkalot/caretz/internal/log"
 	"github.com/makkalot/caretz/internal/output"
+	"github.com/makkalot/caretz/internal/peers"
+	"github.com/makkalot/caretz/internal/sessiontools"
 	"github.com/makkalot/caretz/internal/slashcmd"
+	"github.com/makkalot/caretz/internal/subagents"
 	"github.com/makkalot/caretz/internal/tools"
 	"github.com/makkalot/caretz/internal/uuid"
 	"github.com/makkalot/caretz/lib/llm"
@@ -33,12 +36,22 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 	baseFlags.Incognito = values.Incognito
 	baseFlags.Output = values.Output
 	baseFlags.Theme = values.Theme
+	peerName := strings.TrimSpace(values.peerName)
+	mainPeerFromConfig := false
+	if peerName != "" && (prompt != "" || promptFile != "" || strings.TrimSpace(flagSessionID) != "" || baseFlags.Incognito || parsed.Changed("adapter") || parsed.Changed("main-peer") || values.Version) {
+		output.Errorf(stderr, "caretz peer runs a bot interactively on its own saved session; message it with SendMessage instead")
+		return 2
+	}
 	if values.Version {
 		_, _ = fmt.Fprintln(stdout, formatBuildInfo(opts.BuildInfo))
 		return 0
 	}
 	if prompt != "" && promptFile != "" {
 		output.Errorf(stderr, "-p and --prompt-file cannot be combined")
+		return 2
+	}
+	if values.StartPeers && (prompt != "" || promptFile != "") {
+		_, _ = fmt.Fprintln(stderr, "error: --start-peers starts bots for an interactive session and cannot be combined with -p or --prompt-file")
 		return 2
 	}
 	if promptFile != "" {
@@ -51,6 +64,33 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 	}
 	adapterSet := parsed.Changed("adapter")
 	recordBaseFlagVisits(parsed, &baseFlags)
+	if sessionID := strings.TrimSpace(flagSessionID); peerName == "" && sessionID != "" && !adapterSet && isPeerBot(&baseFlags, sessionID) {
+		// A bot's history is its peer session, so -s with a bot's name opens
+		// the bot rather than an empty root session of the same name.
+		if prompt != "" || baseFlags.Incognito || parsed.Changed("main-peer") {
+			output.Errorf(stderr, "%s is a peer bot: run it with caretz peer %s and message it with SendMessage, or pass --adapter to open a session that shares its name", sessionID, sessionID)
+			return 2
+		}
+		peerName = sessionID
+	}
+	if peerName == "" {
+		// --start-peers may run the workspace's main bot in place of a root
+		// session; a plain caretz always opens a root session.
+		selectsSession := prompt != "" || strings.TrimSpace(flagSessionID) != "" || baseFlags.Incognito || adapterSet
+		mainPeer := strings.TrimSpace(values.MainPeer)
+		if parsed.Changed("main-peer") {
+			if mainPeer != peers.RootLabel && selectsSession {
+				output.Errorf(stderr, "--main-peer runs a bot interactively on its own saved session and cannot be combined with -p, --prompt-file, -s, --adapter, or --incognito")
+				return 2
+			}
+		} else if values.StartPeers && !selectsSession {
+			mainPeer = configuredMainPeer(&baseFlags)
+		}
+		if mainPeer != "" && mainPeer != peers.RootLabel {
+			peerName = mainPeer
+			mainPeerFromConfig = !parsed.Changed("main-peer")
+		}
+	}
 	if baseFlags.Debug {
 		logger.SetVerbosity(2)
 	} else if baseFlags.Verbose {
@@ -64,6 +104,14 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 	if err != nil {
 		output.Errorf(stderr, "%v", err)
 		return 2
+	}
+	if peerName != "" {
+		// A bot's history lives in one stable session per workspace.
+		selectedAdapter, flagSessionID = peerAdapter, peerName
+		if err := applyPeerProfile(&baseFlags, peerName); err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
 	}
 	if err := restoreSessionProfile(&baseFlags, selectedAdapter, flagSessionID); err != nil {
 		output.Errorf(stderr, "%v", err)
@@ -82,6 +130,30 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 	if baseFlags.Incognito && strings.TrimSpace(flagSessionID) != "" {
 		output.Errorf(stderr, "incognito mode and -s cannot be combined")
 		return 2
+	}
+	var launch *peerLaunch
+	if peerName != "" {
+		if rt.Incognito {
+			_, _ = fmt.Fprintln(stderr, "error: peer bots keep durable sessions and cannot run incognito")
+			return 2
+		}
+		launch, err = preparePeerLaunch(rt, peerName)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			if mainPeerFromConfig {
+				_, _ = fmt.Fprintf(stderr, "peers.main in config runs %s here; pass --main-peer root for a root session\n", peerName)
+			}
+			return 1
+		}
+		launch.flags = parsed.FlagArgs(sessionSelectionFlags...)
+		defer func() { _ = launch.lock.Release() }()
+	}
+	var botStarter *botStart
+	if values.StartPeers {
+		if botStarter, err = prepareBotStart(rt, parsed.FlagArgs(sessionSelectionFlags...)); err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 2
+		}
 	}
 	cwd := rt.CWD
 	sessionsDir := rt.SessionsDir
@@ -115,6 +187,25 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 			rt.Settings = restored
 			restoredSession = true
 		}
+	}
+
+	if launch != nil && !baseFlags.Changed["model"] && !baseFlags.Changed["reasoning"] {
+		// The definition's model and reasoning win over a saved /model choice.
+		if ref := strings.TrimSpace(launch.def.Model); ref != "" {
+			reasoning := strings.TrimSpace(launch.def.Reasoning)
+			if reasoning == "" {
+				reasoning = runtimeConfig.ReasoningEffort
+			}
+			restored, err := settingsForSessionRuntime(fileConfig, runtimeConfig, sessionRuntimeState{ModelRef: ref, ReasoningEffort: reasoning})
+			if err != nil {
+				output.Errorf(stderr, "bot %s: %v", peerName, err)
+				return 1
+			}
+			runtimeConfig = restored
+		} else if reasoning := strings.TrimSpace(launch.def.Reasoning); reasoning != "" {
+			runtimeConfig.ReasoningEffort = reasoning
+		}
+		rt.Settings = runtimeConfig
 	}
 
 	requestedRef := runtimeConfig.ActiveModelRef
@@ -181,7 +272,11 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 	}
 
 	if !baseFlags.Incognito {
-		if err := requireSessionRepairCheck(sessionsDir, sessionID); err != nil {
+		repairAdapter, sessionRef := "", sessionID
+		if launch != nil {
+			repairAdapter, sessionRef = peerAdapter, sessionID+" --adapter "+peerAdapter
+		}
+		if err := requireSessionRepairCheck(sessionsDir, sessionID, repairAdapter); err != nil {
 			var repairRequired *sessionRepairRequired
 			if errors.As(err, &repairRequired) {
 				_, _ = fmt.Fprintf(stderr, "Cannot safely reopen session %s yet.\n\n", sessionID)
@@ -198,8 +293,8 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 					_, _ = fmt.Fprintln(stderr, "All recorded tool calls have results, but the assistant never wrote a final response.")
 				}
 				_, _ = fmt.Fprintln(stderr)
-				_, _ = fmt.Fprintf(stderr, "Inspect details:  caretz session inspect %s\n", sessionID)
-				_, _ = fmt.Fprintf(stderr, "Repair safely:   caretz session repair %s\n", sessionID)
+				_, _ = fmt.Fprintf(stderr, "Inspect details:  caretz session inspect %s\n", sessionRef)
+				_, _ = fmt.Fprintf(stderr, "Repair safely:   caretz session repair %s\n", sessionRef)
 				_, _ = fmt.Fprintln(stderr)
 				_, _ = fmt.Fprintln(stderr, "Repair backs up context.jsonpl, injects synthetic recovery messages at the broken turn, and rewrites the context log.")
 				return 1
@@ -211,8 +306,13 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		}
 	}
 
+	workspaceDir := ""
+	if launch != nil {
+		workspaceDir = launch.workDir
+	}
 	publicSession, err := rt.Client.NewSession(sessionID, caretz.SessionOptions{
 		Adapter:           adapterType,
+		WorkspaceDir:      workspaceDir,
 		PermissionTimeout: rt.PermissionTimeout,
 		Model: &caretz.ModelOptions{
 			APIKey:           runtimeConfig.APIKey,
@@ -248,6 +348,12 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		return fileConfig.PolicyForWorkspace(workspace)
 	}
 	session.SetSubagentModelResolver(subagentModelResolver{fileConfig: fileConfig, policyFor: policyFor, llmTimeout: runtimeConfig.LLMTimeout, llmMaxAttempts: runtimeConfig.LLMMaxAttempts, logger: logger})
+	if launch != nil {
+		if err := launch.configureSession(session); err != nil {
+			output.Errorf(stderr, "failed to configure bot %s: %v", peerName, err)
+			return 1
+		}
+	}
 	if !baseFlags.Incognito {
 		if err := saveSessionRuntime(sessionRuntimeFile, sessionRuntimeStateFromSettings(runtimeConfig, fileConfig.Profile)); err != nil {
 			output.Errorf(stderr, "%v", err)
@@ -360,6 +466,11 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 			return 1
 		}
 	}
+	if defs, err := peerDefinitions(agentsDirs, rt.Profile.Agents)(); err == nil && len(defs) > 0 {
+		if err := slashCommandRegistry.Register(peersCommand{configRoot: rt.ConfigRoot, workspace: cwd, self: peerName, list: peerDefinitions(agentsDirs, rt.Profile.Agents)}); err != nil {
+			panic(fmt.Sprintf("failed to register /peers: %v", err))
+		}
+	}
 
 	if prompt == "" {
 		var interactiveErr error
@@ -379,7 +490,21 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 				ModelChoices:         publicModelChoices(modelChoices),
 			})
 		} else {
-			interactiveErr = startTUI(session, logger, runtimeConfig.Model, runtimeConfig.ActiveModelRef, rt.FileConfig.Profile, cwd, agentsDirs, slashCommandRegistry, modelChoices, rt.PlanMode, runtimeConfig.OutputMode, !rt.Incognito, rt.ConfigRoot, rt.ConfigRootSupplied, rt.StartupResources, scheduleDefaults(rt.FileConfig.Operational().Schedules), tuiHooks{permissionPrompts: opts.PermissionPrompts, messageRenderers: opts.MessageRenderers})
+			var peerOptions tuiPeerOptions
+			if launch != nil {
+				peerOptions = tuiPeerOptions{
+					Integration:   func(string) sessiontools.Factory { return launch.integration(rt, logger) },
+					Required:      true,
+					ResumeCommand: launch.resumeCommand(),
+					DisplayName:   launch.def.Name,
+				}
+				if botStarter != nil {
+					peerOptions.OnStart = func() { startPeerBots(rt, botStarter, logger) }
+				}
+			} else {
+				peerOptions = rootPeerOptions(rt, logger, stderr, botStarter)
+			}
+			interactiveErr = startTUI(session, logger, runtimeConfig.Model, runtimeConfig.ActiveModelRef, rt.FileConfig.Profile, cwd, agentsDirs, slashCommandRegistry, modelChoices, rt.PlanMode, runtimeConfig.OutputMode, !rt.Incognito, rt.ConfigRoot, rt.ConfigRootSupplied, rt.StartupResources, scheduleDefaults(rt.FileConfig.Operational().Schedules), tuiHooks{permissionPrompts: opts.PermissionPrompts, messageRenderers: opts.MessageRenderers}, peerOptions)
 		}
 		if interactiveErr != nil {
 			output.Errorf(stderr, "%v", interactiveErr)
@@ -426,17 +551,7 @@ func restoreSessionProfile(flags *baseFlagValues, adapterType, sessionID string)
 	if flags == nil || strings.TrimSpace(sessionID) == "" || flags.Incognito {
 		return nil
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("get working directory for session profile: %w", err)
-	}
-	if strings.TrimSpace(flags.Workspace) != "" {
-		cwd, err = resolveRootDir(flags.Workspace)
-		if err != nil {
-			return fmt.Errorf("invalid --workspace %q: %w", flags.Workspace, err)
-		}
-	}
-	configRoot, err := resolveConfigRoot(cwd, flags.ConfigRoot, flags.ConfigRootFlags, os.Getenv)
+	_, configRoot, err := flagRoots(flags)
 	if err != nil {
 		return err
 	}
@@ -455,6 +570,51 @@ func restoreSessionProfile(flags *baseFlagValues, adapterType, sessionID string)
 		flags.Changed["profile"] = true
 	}
 	return nil
+}
+
+// applyPeerProfile selects the bot definition's profile unless --profile was
+// given. It runs before the runtime is built, because the profile shapes it.
+func applyPeerProfile(flags *baseFlagValues, name string) error {
+	if flags.Changed["profile"] {
+		return nil
+	}
+	cwd, configRoot, err := flagRoots(flags)
+	if err != nil {
+		return err
+	}
+	homeAgentsDir, err := config.HomeAgentsDir()
+	if err != nil {
+		return err
+	}
+	configRootSupplied := flags.ConfigRootFlags.ConfigRootSet || strings.TrimSpace(os.Getenv("CARETZ_CONFIG_ROOT")) != ""
+	def, err := subagents.LoadFromDirs(agentDirsForRuntime(homeAgentsDir, cwd, configRoot, configRootSupplied), name)
+	if err != nil || !def.IsPeer() || def.Profile == "" {
+		// preparePeerLaunch reports a missing or non-peer definition.
+		return nil
+	}
+	flags.Profile = def.Profile
+	flags.Changed["profile"] = true
+	return nil
+}
+
+// flagRoots resolves the workspace and config root the flags select, the
+// same way buildRuntimeFromFlags does.
+func flagRoots(flags *baseFlagValues) (cwd, configRoot string, err error) {
+	cwd, err = os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("get working directory: %w", err)
+	}
+	if strings.TrimSpace(flags.Workspace) != "" {
+		cwd, err = resolveRootDir(flags.Workspace)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid --workspace %q: %w", flags.Workspace, err)
+		}
+	}
+	configRoot, err = resolveConfigRoot(cwd, flags.ConfigRoot, flags.ConfigRootFlags, os.Getenv)
+	if err != nil {
+		return "", "", err
+	}
+	return cwd, configRoot, nil
 }
 
 func runBangPrompt(ctx context.Context, prompt string, registry *tools.Registry, stdout, stderr io.Writer) (int, bool) {

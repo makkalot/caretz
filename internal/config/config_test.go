@@ -459,6 +459,40 @@ func TestLoadRejectsInvalidSchedules(t *testing.T) {
 	}
 }
 
+func TestLoadPeersLayoutFromWorkspace(t *testing.T) {
+	tmp := t.TempDir()
+	homePath := filepath.Join(tmp, "home.json")
+	projectPath := filepath.Join(tmp, "project.json")
+	writeFile(t, homePath, `{"profiles":{"general":{"peers":{"tabs":[{"name":"all","bots":["a"]}]}}}}`)
+	writeFile(t, projectPath, `{"profiles":{"general":{"peers":{"tabs":[{"name":"lead","bots":["coordinator"]},{"name":"impl","bots":["a","b"],"layout":"rows"}]}}}}`)
+
+	cfg, err := Load(homePath, projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Operational().Peers
+	if p == nil || len(p.Tabs) != 2 || p.Tabs[1].Name != "impl" || p.Tabs[1].Layout != "rows" || fmt.Sprint(p.Tabs[1].Bots) != "[a b]" {
+		t.Fatalf("Peers = %#v, want the workspace block to replace home", p)
+	}
+}
+
+func TestLoadRejectsInvalidPeersLayout(t *testing.T) {
+	tests := map[string]string{
+		`[{"bots":["a"]}]`:                                      "peers.tabs[0].name must not be empty",
+		`[{"name":"x"},{"name":"x"}]`:                           `tab "x" is listed twice`,
+		`[{"name":"x","layout":"grid"}]`:                        "peers.tabs[0].layout must be rows or columns",
+		`[{"name":"x","bots":[" "]}]`:                           "must not contain empty names",
+		`[{"name":"x","bots":["a"]},{"name":"y","bots":["a"]}]`: `bot "a" is in both "x" and "y"`,
+	}
+	for tabs, want := range tests {
+		homePath := filepath.Join(t.TempDir(), "home.json")
+		writeFile(t, homePath, `{"profiles":{"general":{"peers":{"tabs":`+tabs+`}}}}`)
+		if _, err := Load(homePath, ""); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Load(%s) error = %v, want %q", tabs, err, want)
+		}
+	}
+}
+
 func TestLoadBuiltInProfiles(t *testing.T) {
 	cfg, err := Load("", "")
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ctxstore "github.com/makkalot/caretz/internal/context"
@@ -51,6 +52,7 @@ type AgentSession struct {
 	asyncStartErr           error
 	asyncOwnedMu            sync.Mutex
 	asyncOwned              map[string]*ownedAsyncRun
+	asyncTurnRunner         atomic.Pointer[AsyncTurnRunner]
 	integrationMu           sync.Mutex
 	integrations            map[string]sessiontools.Integration
 	integrationFactories    []sessiontools.Factory

@@ -1063,7 +1063,7 @@ func isBuiltInToolName(name string) bool {
 
 func isSessionToolName(name string) bool {
 	switch name {
-	case "CallSubagent", "RegisterSchedule", "UpdateSchedule", "ListSchedules", "RemoveSchedule":
+	case "CallSubagent", "RegisterSchedule", "UpdateSchedule", "ListSchedules", "RemoveSchedule", "SendMessage":
 		return true
 	default:
 		return false

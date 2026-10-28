@@ -3,7 +3,9 @@ package subagents
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseSubagent(t *testing.T) {
@@ -72,6 +74,36 @@ description: nope
 mode: subagent
 permission:
   - edit
+---
+body`,
+		`---
+description: peer-only fields on a subagent
+mode: subagent
+workspace: out
+---
+body`,
+		`---
+description: peer-only fields on a subagent
+mode: subagent
+accept_from: root
+---
+body`,
+		`---
+description: peer-only fields on a subagent
+mode: subagent
+profile: review
+---
+body`,
+		`---
+description: peer-only fields on a subagent
+mode: subagent
+run_timeout: 1h
+---
+body`,
+		`---
+description: bad timeout
+mode: peer
+run_timeout: soon
 ---
 body`,
 	}
@@ -182,5 +214,44 @@ mode: subagent
 ` + body)
 	if err := os.WriteFile(filepath.Join(dir, name+".md"), data, 0644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestParsePeerAndFilterModes(t *testing.T) {
+	dir := t.TempDir()
+	writeAgent := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeAgent("reviewer", `---
+description: Reviews changes
+mode: peer
+workspace: out/reviewer
+accept_from: root, planner
+profile: review
+run_timeout: 2h
+---
+Review carefully.`)
+	writeAgent("researcher", `---
+description: Researches
+mode: subagent
+---
+Research.`)
+
+	defs, err := DiscoverFromDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peers := Peers(defs)
+	if len(peers) != 1 || peers[0].Name != "reviewer" || !peers[0].IsPeer() {
+		t.Fatalf("Peers() = %+v", peers)
+	}
+	if peers[0].Workspace != "out/reviewer" || !reflect.DeepEqual(peers[0].AcceptFrom, []string{"root", "planner"}) || peers[0].Profile != "review" || peers[0].RunTimeout != 2*time.Hour {
+		t.Fatalf("peer fields = %q %#v %q", peers[0].Workspace, peers[0].AcceptFrom, peers[0].Profile)
+	}
+	if subs := Subagents(defs); len(subs) != 1 || subs[0].Name != "researcher" {
+		t.Fatalf("Subagents() = %+v", subs)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/internal/sandbox"
 	"github.com/makkalot/caretz/internal/schedules"
+	"github.com/makkalot/caretz/internal/sessiontools"
 	"github.com/makkalot/caretz/internal/slashcmd"
 	"github.com/makkalot/caretz/internal/tools"
 	"github.com/makkalot/caretz/lib/eventing"
@@ -46,6 +48,7 @@ type startupResources struct {
 	Context       []string
 	Skills        []string
 	Agents        []string
+	Peers         []string
 }
 
 // scheduleDefaults turns the profile's schedules block into the model
@@ -85,7 +88,7 @@ func (h tuiHooks) newCLIOutput(mode output.Mode) *output.CLIOutput {
 	return cliOutput
 }
 
-func startTUI(session *agent.AgentSession, logger *log.Logger, model, modelRef, profile, root string, agentsDirs []string, slashCommandRegistry *slashcmd.Registry, modelChoices []config.ModelChoice, planMode bool, outputMode output.Mode, resumable bool, configRoot string, configRootSupplied bool, resources startupResources, scheduled schedules.Defaults, hooks tuiHooks) error {
+func startTUI(session *agent.AgentSession, logger *log.Logger, model, modelRef, profile, root string, agentsDirs []string, slashCommandRegistry *slashcmd.Registry, modelChoices []config.ModelChoice, planMode bool, outputMode output.Mode, resumable bool, configRoot string, configRootSupplied bool, resources startupResources, scheduled schedules.Defaults, hooks tuiHooks, peerOptions tuiPeerOptions) error {
 	logger.Debug("Starting dependency-light interactive UI")
 	cliOutput := hooks.newCLIOutput(outputMode)
 	cliOutput.EnableReasoningStreaming()
@@ -95,16 +98,28 @@ func startTUI(session *agent.AgentSession, logger *log.Logger, model, modelRef, 
 	if err := session.InstallIntegration(schedules.NewIntegrationWithDefaults(scheduled)); err != nil {
 		return fmt.Errorf("failed to restore schedules: %w", err)
 	}
+	if peerOptions.Integration != nil {
+		if err := session.InstallIntegration(peerOptions.Integration(session.AdapterType())); err != nil {
+			if peerOptions.Required {
+				return fmt.Errorf("failed to start peer messaging: %w", err)
+			}
+			_, _ = fmt.Fprintf(stderr, "Warning: peer messaging disabled: %v\n", err)
+		}
+	}
 
 	printBanner(profile)
 	printStartupResources(resources)
 	if err := replaySession(cliOutput, session); err != nil {
 		return fmt.Errorf("failed to replay session: %w", err)
 	}
+	if peerOptions.OnStart != nil {
+		peerOptions.OnStart()
+	}
 
 	reporter := herdr.NewFromEnvironment(herdr.Options{
 		Adapter: session.AdapterType(), ConfigRoot: configRoot,
 		ConfigRootSupplied: configRootSupplied, Resumable: resumable,
+		ResumeCommand: peerOptions.ResumeCommand, DisplayName: peerOptions.DisplayName,
 	})
 	state := &tuiState{session: session, cliOutput: cliOutput, registry: slashCommandRegistry, outputMode: outputMode, resumable: resumable, lifecycle: reporter, hooks: hooks}
 	state.reportLifecycle(herdr.StateIdle, "")
@@ -133,9 +148,26 @@ type tuiState struct {
 	resumable   bool
 	clearScreen func()
 	asyncWake   chan struct{}
+	// asyncTurns queues background turns for the raw loop to run in the
+	// terminal; nil when no raw loop is running.
+	asyncTurns  chan *asyncTurn
 	asyncEvents eventing.Subscription
 	lifecycle   lifecycleReporter
 	hooks       tuiHooks
+}
+
+// tuiPeerOptions connects an interactive session to peer bot messaging.
+type tuiPeerOptions struct {
+	// Integration builds the messaging integration for a session adapter.
+	Integration func(adapter string) sessiontools.Factory
+	// Required makes a failed install fatal, as it is for bot processes.
+	Required bool
+	// ResumeCommand overrides how Herdr restores the pane.
+	ResumeCommand []string
+	// DisplayName names the pane in Herdr's agent list instead of "caretz".
+	DisplayName string
+	// OnStart runs once the session is on screen.
+	OnStart func()
 }
 
 type lifecycleReporter interface {
@@ -146,16 +178,29 @@ type lifecycleReporter interface {
 type commandRunner func(func(context.Context) (slashcmd.Result, bool, error)) (slashcmd.Result, bool, error)
 
 func (s *tuiState) watchAsyncRuns() error {
-	subscription, err := s.session.SubscribeAuditEvents(eventing.AsyncRunRequested)
+	subscription, err := s.session.SubscribeAuditEvents(eventing.AsyncRunRequested, eventing.AsyncRunStarted, eventing.AsyncRunCompleted)
 	if err != nil {
 		return err
 	}
 	s.asyncEvents = subscription
+	sessionID, lifecycle := s.session.ChannelID(), s.lifecycle
 	go func() {
-		for range subscription.Events() {
-			select {
-			case s.asyncWake <- struct{}{}:
-			default:
+		for event := range subscription.Events() {
+			switch event.EventType {
+			case eventing.AsyncRunRequested:
+				select {
+				case s.asyncWake <- struct{}{}:
+				default:
+				}
+			case eventing.AsyncRunStarted:
+				// Background turns (schedules, peer messages) show as working.
+				if lifecycle != nil {
+					lifecycle.Report(herdr.StateWorking, "", sessionID)
+				}
+			case eventing.AsyncRunCompleted:
+				if lifecycle != nil {
+					lifecycle.Report(herdr.StateIdle, "", sessionID)
+				}
 			}
 		}
 	}()
@@ -236,6 +281,10 @@ func (s *tuiState) processLineWith(text string, runner promptRunner) (exit bool,
 			}
 			if oldEvents != nil {
 				oldEvents.Close()
+			}
+			if s.asyncTurns != nil {
+				oldSession.SetAsyncTurnRunner(nil)
+				s.session.SetAsyncTurnRunner(s.queueAsyncTurn)
 			}
 			_ = oldSession.Close()
 			if s.asyncWake != nil {
@@ -340,9 +389,14 @@ func runRawTUI(state *tuiState, root string, agentsDirs []string) error {
 	state.runCommand = func(call func(context.Context) (slashcmd.Result, bool, error)) (slashcmd.Result, bool, error) {
 		return runRawCommand(editor.terminal, state.session, call, state.lifecycle, state.hooks.permissionPrompts)
 	}
+	if state.asyncWake != nil {
+		state.asyncTurns = make(chan *asyncTurn, 4)
+		state.session.SetAsyncTurnRunner(state.queueAsyncTurn)
+	}
 	defer func() {
 		state.clearScreen = nil
 		state.runCommand = nil
+		state.stopAsyncTurns()
 	}()
 	firstPrompt := true
 	for {
@@ -354,8 +408,7 @@ func runRawTUI(state *tuiState, root string, agentsDirs []string) error {
 		line, err := editor.readLine(state.asyncWake)
 		if err != nil {
 			if errors.Is(err, errExternalWake) {
-				goto redrawn
-			redrawn:
+				state.runQueuedAsyncTurns(editor.terminal)
 				continue
 			}
 			if errors.Is(err, ErrInterrupted) {
@@ -385,6 +438,15 @@ func runRawTUI(state *tuiState, root string, agentsDirs []string) error {
 // requests, permission prompts, and immediate Ctrl-C cancellation. The loop is
 // entirely in-process and does not require a socket listener.
 func runRawPrompt(terminal *ansi.Terminal, session *agent.AgentSession, text string, lifecycle lifecycleReporter, prompts map[string]slashcmd.PermissionPrompt) error {
+	return runRawTurn(terminal, session, func(ctx context.Context, stop <-chan struct{}) error {
+		_, err := session.CallUntilStopWithPermissions(ctx, text, stop)
+		return err
+	}, lifecycle, prompts)
+}
+
+// runRawTurn runs one agent turn with ESC graceful stop, Ctrl-C cancellation,
+// and permission prompts.
+func runRawTurn(terminal *ansi.Terminal, session *agent.AgentSession, turn func(context.Context, <-chan struct{}) error, lifecycle lifecycleReporter, prompts map[string]slashcmd.PermissionPrompt) error {
 	subscription, err := session.SubscribeAuditEvents(eventing.PermissionRequested)
 	if err != nil {
 		return err
@@ -392,9 +454,79 @@ func runRawPrompt(terminal *ansi.Terminal, session *agent.AgentSession, text str
 	defer subscription.Close()
 	return runInteractiveRawEventLoop(terminal, subscription.Events(), func(ctx context.Context, stop <-chan struct{}) error {
 		ctx = progress.With(ctx, func(message string) { _, _ = fmt.Fprintln(terminal.Writer(), message) })
-		_, err := session.CallUntilStopWithPermissions(ctx, text, stop)
-		return err
+		return turn(ctx, stop)
 	}, session.ResolvePermission, permissionLifecycle(lifecycle, session), prompts)
+}
+
+var errTUIClosed = errors.New("interactive session closed before the background turn ran")
+
+// asyncTurn is a background turn waiting for the raw loop. Whoever claims it
+// first decides its fate: the loop runs it, or the requester abandons it.
+type asyncTurn struct {
+	run     func(context.Context, <-chan struct{}) error
+	done    chan error
+	claimed atomic.Bool
+}
+
+// queueAsyncTurn is the session's AsyncTurnRunner. It hands the turn to the
+// raw loop and waits for the result, so a background turn owns the terminal
+// exactly like a typed one.
+func (s *tuiState) queueAsyncTurn(ctx context.Context, run func(context.Context, <-chan struct{}) error) error {
+	turn := &asyncTurn{run: run, done: make(chan error, 1)}
+	select {
+	case s.asyncTurns <- turn:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case s.asyncWake <- struct{}{}:
+	default:
+	}
+	select {
+	case err := <-turn.done:
+		return err
+	case <-ctx.Done():
+		if turn.claimed.CompareAndSwap(false, true) {
+			return ctx.Err()
+		}
+		// The loop is already running it; the turn ends with ctx.
+		return <-turn.done
+	}
+}
+
+// runQueuedAsyncTurns runs every queued background turn in the terminal.
+func (s *tuiState) runQueuedAsyncTurns(terminal *ansi.Terminal) {
+	for {
+		select {
+		case turn := <-s.asyncTurns:
+			if !turn.claimed.CompareAndSwap(false, true) {
+				continue
+			}
+			// The session reports a failed turn itself, and watchAsyncRuns
+			// reports the Herdr state.
+			turn.done <- runRawTurn(terminal, s.session, turn.run, s.lifecycle, s.hooks.permissionPrompts)
+		default:
+			return
+		}
+	}
+}
+
+// stopAsyncTurns detaches the raw loop and fails turns it will never run.
+func (s *tuiState) stopAsyncTurns() {
+	if s.asyncTurns == nil {
+		return
+	}
+	s.session.SetAsyncTurnRunner(nil)
+	for {
+		select {
+		case turn := <-s.asyncTurns:
+			if turn.claimed.CompareAndSwap(false, true) {
+				turn.done <- errTUIClosed
+			}
+		default:
+			return
+		}
+	}
 }
 
 func runRawCommand(terminal *ansi.Terminal, session *agent.AgentSession, call func(context.Context) (slashcmd.Result, bool, error), lifecycle lifecycleReporter, prompts map[string]slashcmd.PermissionPrompt) (result slashcmd.Result, handled bool, resultErr error) {
@@ -834,6 +966,7 @@ func printStartupResources(resources startupResources) {
 		{title: "Context", items: resources.Context},
 		{title: "Skills", items: resources.Skills},
 		{title: "Agents", items: resources.Agents},
+		{title: "Bots", items: resources.Peers},
 	}
 	for _, section := range sections {
 		if len(section.items) == 0 {

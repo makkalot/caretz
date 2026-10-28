@@ -52,6 +52,21 @@ You do not have to change directories first:
 caretz --workspace ../another-project -p "review the latest commit"
 ```
 
+## Hand Work to a Bot That Keeps Running
+
+Mark an agent `mode: peer` and run it in a second terminal:
+
+```sh
+caretz peer reviewer
+```
+
+Your main session can now message the reviewer and keep working; the answer
+arrives later and wakes your session to use it. A bot is a normal session that
+keeps running, so `caretz peer` takes every flag `caretz` does, such as
+`--profile`, `--plan`, or `--unrestricted-network`. Inside Herdr or tmux, your
+main session can open configured bots in their own panes for you, passing along
+the flags you started it with. See [Peer bots](../peers.md).
+
 ## Find More
 
 The installed binary is the source of truth for available commands and options:
