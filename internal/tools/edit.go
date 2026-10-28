@@ -209,7 +209,7 @@ func (r *Registry) handleEditToolCall(ctx context.Context, editTool llm.ToolCall
 		return llm.Message{}, fmt.Errorf("edits array is empty")
 	}
 
-	r.logInfo("Edit tool called: %s (%d edits)", args.FilePath, len(args.Edits))
+	r.logDebug("Edit tool called: %s (%d edits)", args.FilePath, len(args.Edits))
 
 	filePath, cwd, err := r.resolveWorkspacePath(args.FilePath)
 	if err != nil {
@@ -238,6 +238,6 @@ func (r *Registry) handleEditToolCall(ctx context.Context, editTool llm.ToolCall
 	diff := GenerateDiff(original, modified, DiffContextLines)
 	result := fmt.Sprintf("Successfully replaced %d block(s) in %s.\n%s", len(args.Edits), args.FilePath, diff)
 
-	r.logInfo("Edit tool completed: %d edits applied to %s", len(args.Edits), filePath)
+	r.logDebug("Edit tool completed: %d edits applied to %s", len(args.Edits), filePath)
 	return llm.Message{Role: llm.RoleTool, Content: result, ToolCallID: editTool.ID}, nil
 }

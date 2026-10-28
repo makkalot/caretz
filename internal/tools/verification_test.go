@@ -8,7 +8,44 @@ import (
 	"testing"
 
 	"github.com/makkalot/caretz/internal/sandbox"
+	"github.com/makkalot/caretz/lib/llm"
 )
+
+func TestRunCommandKeepsSandboxAndProxyPermissions(t *testing.T) {
+	requested := false
+	registry := &Registry{WorkspaceDir: t.TempDir(), AskSandboxOff: true,
+		RunUnsandboxed: func(context.Context, string, string, sandbox.RunOptions) (string, string, error) {
+			t.Fatal("manual command attempted sandbox-off execution")
+			return "", "", nil
+		},
+		RunSandboxedOptions: func(ctx context.Context, _, command string, opts sandbox.RunOptions) (string, string, error) {
+			if command != "fetch" || opts.AuthorizeNetwork == nil || !opts.ReadOnly || opts.TimeoutSeconds != sandbox.DefaultTimeoutSeconds {
+				t.Fatalf("command=%s options=%+v", command, opts)
+			}
+			allowed, err := opts.AuthorizeNetwork(ctx, "pypi.org:443")
+			if !allowed || err != nil {
+				t.Fatalf("network authorization: %v, %v", allowed, err)
+			}
+			return "downloaded", "", nil
+		},
+	}
+	registry.SetPlanMode(true)
+	ctx := WithPermissionRequester(context.Background(), func(_ context.Context, call llm.ToolCall, permission *PermissionError) (bool, error) {
+		requested = true
+		if call.ID == "" || call.Name != "Bash" || permission.Capability != PermissionNetwork || permission.Target != "pypi.org:443" {
+			t.Fatalf("permission=%+v call=%+v", permission, call)
+		}
+		return true, nil
+	})
+	result, err := registry.RunCommandWithPermissions(ctx, "fetch")
+	if err != nil || result.ExitCode != 0 || result.Stdout != "downloaded" || !requested {
+		t.Fatalf("result=%+v err=%v requested=%v", result, err, requested)
+	}
+	registry.DisabledTools = map[string]bool{"Bash": true}
+	if _, err := registry.RunCommandWithPermissions(ctx, "fetch"); err == nil {
+		t.Fatal("disabled Bash was executed")
+	}
+}
 
 func TestRunVerificationCommandPreservesFailureStatus(t *testing.T) {
 	registry := &Registry{WorkspaceDir: t.TempDir(), RunSandboxedOptions: func(_ context.Context, _, command string, _ sandbox.RunOptions) (string, string, error) {

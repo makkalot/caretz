@@ -86,7 +86,7 @@ func (h tuiHooks) newCLIOutput(mode output.Mode) *output.CLIOutput {
 }
 
 func startTUI(session *agent.AgentSession, logger *log.Logger, model, modelRef, profile, root string, agentsDirs []string, slashCommandRegistry *slashcmd.Registry, modelChoices []config.ModelChoice, planMode bool, outputMode output.Mode, resumable bool, configRoot string, configRootSupplied bool, resources startupResources, scheduled schedules.Defaults, hooks tuiHooks) error {
-	logger.Info("Starting dependency-light interactive UI")
+	logger.Debug("Starting dependency-light interactive UI")
 	cliOutput := hooks.newCLIOutput(outputMode)
 	cliOutput.EnableReasoningStreaming()
 	if err := cliOutput.RegisterHandlers(session); err != nil {

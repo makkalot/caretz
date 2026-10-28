@@ -8,6 +8,14 @@ caretz (Care Taker) is a small, sandboxed coding assistant in Go, built to work
 well with the models you can run on your own hardware. Hosted
 OpenAI-compatible providers work too.
 
+## Nothing runs in the background
+
+caretz doesn't start servers or listen for connections, and it has no
+telemetry, analytics, or update checks. It talks only to the endpoints you
+configure: your model provider and, if you set them up, a web search
+provider and a vision model. With a local model, nothing leaves your
+machine.
+
 ## Quick start
 
 1. Install to `~/bin/caretz` (Linux and macOS). Either use the release
@@ -151,7 +159,9 @@ func main() {
 
 See [Embedding caretz in Go](docs/embedding/_index.md), or
 [Building on caretz's CLI](docs/extending-cli/_index.md) to make your own CLI with
-caretz's flags, sandbox, and sessions.
+caretz's flags, sandbox, and sessions. [`examples/`](examples/README.md) has
+three complete apps built on these APIs: a git review subcommand, a browser
+app that writes and runs Python, and an assistant for your Markdown notes.
 
 ## Documentation
 
@@ -175,5 +185,6 @@ The docs are split into small pages; browse them at
 - **Integrations:** [Zed and ACP editors](docs/acp.md) · [Herdr](docs/herdr.md)
 - **Build on caretz:** [Embed in Go](docs/embedding/_index.md) ·
   [Build on the CLI](docs/extending-cli/_index.md) ·
+  [Examples](examples/README.md) ·
   [Dependencies](docs/dependencies.md) · [Contributing](docs/contributing.md)
 - **Help:** [Troubleshooting](docs/troubleshooting/_index.md)

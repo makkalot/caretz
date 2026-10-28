@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>coderun · Python playground</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header><strong>coderun<span> / Python playground</span></strong><span id="connection" role="status">Choose a project</span></header>
+  <nav aria-label="Workspace panels">
+    <button data-tab="projects">Projects</button><button data-tab="chat" aria-pressed="true">Chat</button><button data-tab="files">Files & output</button>
+  </nav>
+  <main>
+    <aside id="projects" class="panel">
+      <h2>Projects</h2>
+      <form id="create-project"><label for="project-name">New project</label><div class="row"><input id="project-name" maxlength="120" required placeholder="Water tracker"><button type="submit" aria-label="Create project">+</button></div></form>
+      <div id="project-list"></div>
+      <p class="hint">Describe a Python app, then watch it take shape. Projects and chat are saved locally.</p>
+    </aside>
+    <section id="chat" class="panel active">
+      <div class="heading"><h1 id="project-title">Build something small.</h1><button id="stop" disabled>Stop</button></div>
+      <div id="messages" role="log" aria-live="polite"><p class="hint">Create a project to start. Try “a CLI that tracks my daily water intake”.</p></div>
+      <div id="progress" hidden>
+        <p id="activity" role="status"></p>
+        <details id="reasoning" open hidden><summary>Model reasoning</summary><pre id="reasoning-content"></pre></details>
+        <div id="live-response" hidden><strong>Agent · streaming</strong><pre id="live-text"></pre></div>
+      </div>
+      <div id="permissions"></div>
+      <form id="compose"><label for="prompt">What would you like to build?</label><textarea id="prompt" rows="3" maxlength="50000" required disabled placeholder="Describe your app or ask for a change…"></textarea><button id="send" type="submit" disabled>Send message</button></form>
+    </section>
+    <section id="files" class="panel">
+      <h2>Project files</h2><div id="file-list"><p class="hint">Files appear here as the agent writes them.</p></div>
+      <h3 id="file-name">File preview</h3><pre id="file-content" tabindex="0">Select a file to view its contents.</pre>
+      <div class="heading"><h2>Output</h2><button id="run" disabled>Run main.py</button></div>
+      <p class="hint">Run main.py executes python3 main.py directly in the sandbox. Use the command box for arguments or piped input.</p>
+      <form id="command-form">
+        <label for="cli-command">Try a CLI command</label>
+        <input id="cli-command" list="command-history" maxlength="8192" required disabled autocomplete="off" spellcheck="false" value="python3 main.py --help">
+        <datalist id="command-history"></datalist>
+        <div class="row"><button id="execute-command" type="submit" disabled>Execute command</button><button id="command-stop" type="button" disabled>Stop</button></div>
+      </form>
+      <p class="hint">Commands run directly in the sandbox without a model turn. Pass arguments or pipe input, for example printf '250\n' | python3 main.py. This is not an interactive terminal.</p>
+      <p id="command-status" role="status"></p>
+      <pre id="output" tabindex="0">Your app's output will appear here.</pre>
+    </section>
+  </main>
+  <p id="error" role="alert" hidden></p>
+</body>
+</html>

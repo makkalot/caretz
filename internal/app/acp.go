@@ -276,7 +276,7 @@ func (s *acpServer) Serve(ctx context.Context) error {
 			s.writeResponse(acpResponse{JSONRPC: "2.0", ID: json.RawMessage("null"), Error: &acpError{Code: -32700, Message: "parse error"}})
 			continue
 		}
-		s.logInfo("ACP request: method=%s id=%s", req.Method, acpLogRequestID(req.ID))
+		s.logDebug("ACP request: method=%s id=%s", req.Method, acpLogRequestID(req.ID))
 		if len(req.ID) == 0 {
 			_, rpcErr := s.handle(ctx, req)
 			s.logRequestResult(req, rpcErr)
@@ -296,7 +296,7 @@ func (s *acpServer) Serve(ctx context.Context) error {
 				if decodeParams(req.Params, &p) == nil {
 					if session := s.getSession(p.SessionID); session != nil {
 						if err := s.replaySessionLocked(session); err != nil {
-							s.rt.Logger.Info("Failed to replay ACP session after load: %v", err)
+							s.rt.Logger.Warn("Failed to replay ACP session after load: %v", err)
 						}
 					}
 				}
@@ -359,12 +359,18 @@ func (s *acpServer) logInfo(format string, args ...any) {
 	}
 }
 
+func (s *acpServer) logDebug(format string, args ...any) {
+	if s != nil && s.rt != nil && s.rt.Logger != nil {
+		s.rt.Logger.Debug(format, args...)
+	}
+}
+
 func (s *acpServer) logRequestResult(req acpRequest, rpcErr *acpError) {
 	if rpcErr != nil {
 		s.logInfo("ACP request failed: method=%s id=%s code=%d message=%s", req.Method, acpLogRequestID(req.ID), rpcErr.Code, rpcErr.Message)
 		return
 	}
-	s.logInfo("ACP request complete: method=%s id=%s", req.Method, acpLogRequestID(req.ID))
+	s.logDebug("ACP request complete: method=%s id=%s", req.Method, acpLogRequestID(req.ID))
 }
 
 func acpLogRequestID(id json.RawMessage) string {
@@ -1087,6 +1093,7 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 		runtimeSettings = *s.rt.RequestedSettings
 	}
 	runtimePath := sessionRuntimePath(s.rt.SessionsDir, acpAdapterType, id)
+	restoredSession := false
 	if !s.rt.Incognito {
 		state, found, err := loadSessionRuntime(runtimePath)
 		if err != nil {
@@ -1096,6 +1103,7 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 			if runtimeSettings, err = restoreRestrictedSession(fileConfig, policy, runtimeSettings, state, s.allowedModels); err != nil {
 				return nil, err
 			}
+			restoredSession = true
 		}
 	}
 	runtimeSettings, notice, err := enforceSessionModel(fileConfig, policy, runtimeSettings, s.allowedModels, s.rt.ExplicitModelSource)
@@ -1108,6 +1116,8 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 	if notice != "" {
 		switches = append(switches, notice)
 	}
+	s.logInfo("%s", modelSummary(runtimeSettings, modelSource(s.rt.ExplicitModelSource, restoredSession, runtimeSettings)))
+	s.logInfo("session %s adapter=%s workspace=%s", id, acpAdapterType, cwd)
 	notices := switches
 	if rule := modelRuleNotice(policy); rule != "" {
 		notices = append([]string{rule}, switches...)
@@ -1229,14 +1239,14 @@ func (s *acpServer) systemPromptForWorkspace(cwd string, skillDirs []string, reg
 	}
 	discoveredSkills = filterSkills(discoveredSkills, s.rt.Profile.Skills)
 	if len(discoveredSkills) > 0 {
-		s.rt.Logger.Info("Discovered %d skill(s) for ACP workspace %s", len(discoveredSkills), cwd)
+		s.rt.Logger.Info("skills %s (ACP workspace %s)", skillNames(discoveredSkills), cwd)
 		for _, skill := range discoveredSkills {
-			s.rt.Logger.Info("  Skill: %s - %s (%s)", skill.Name, skill.Description, skill.Location)
+			s.rt.Logger.Debug("  Skill: %s - %s (%s)", skill.Name, skill.Description, skill.Location)
 		}
 	}
 	agentInstructions, err := skills.LoadAgentInstructions(cwd)
 	if err != nil {
-		s.rt.Logger.Info("AGENTS.md could not be loaded for ACP workspace %s: %v", cwd, err)
+		s.rt.Logger.Warn("AGENTS.md could not be loaded for ACP workspace %s: %v", cwd, err)
 	}
 	return skills.BuildSystemPromptWithOptions(skills.SystemPromptOptions{
 		BasePrompt:        s.rt.SystemPromptBase,

@@ -42,7 +42,7 @@ func (a *AgentLoop) compactContext(ctx context.Context, originatorID, parentOrig
 		BeforeTokens: beforeTokens,
 		AfterTokens:  beforeTokens,
 	}
-	a.logger.Info("Starting compaction process (%s): before=%d threshold=%d multiplier=%.2f",
+	a.logger.Debug("Starting compaction process (%s): before=%d threshold=%d multiplier=%.2f",
 		reason, beforeTokens, a.contextManager.ContextWindow()-a.contextManager.ReservedTokens(), a.contextManager.TokenEstimateMultiplier())
 
 	llmSummaryPromptEvent, err := a.contextManager.GetSummaryPromptEventWithActiveRequest(originatorID, parentOriginatorID, parentOriginatorVersion, a.renderedTaskState(), activeUserRequest)
@@ -53,10 +53,10 @@ func (a *AgentLoop) compactContext(ctx context.Context, originatorID, parentOrig
 	if llmSummaryPromptEvent == nil {
 		threshold := a.contextManager.ContextWindow() - a.contextManager.ReservedTokens()
 		if beforeTokens > threshold {
-			a.logger.Info("Compaction skipped (%s): estimated context is still above threshold (%d > %d), but there are no older complete turns outside the recent-history window to summarize",
+			a.logger.Debug("Compaction skipped (%s): estimated context is still above threshold (%d > %d), but there are no older complete turns outside the recent-history window to summarize",
 				reason, beforeTokens, threshold)
 		} else {
-			a.logger.Info("Compaction skipped (%s): estimated context is below threshold (%d <= %d)",
+			a.logger.Debug("Compaction skipped (%s): estimated context is below threshold (%d <= %d)",
 				reason, beforeTokens, threshold)
 		}
 		return result, nil
@@ -107,8 +107,8 @@ func (a *AgentLoop) compactContext(ctx context.Context, originatorID, parentOrig
 	a.setActiveMessages(newMessages)
 	afterTokens := a.contextManager.EstimateTokens(a.activeMessages(), a.llmToolDefinitions)
 	summaryTokens := a.contextManager.EstimateSummaryTokens(summaryResp.Message.Content)
-	a.logger.Info("Finished compaction process (%s): after=%d summary_tokens=%d",
-		reason, afterTokens, summaryTokens)
+	a.logger.Info("[%s] compact %s ~%d → ~%d tokens (summary ~%d)",
+		a.currentProvider().GetModel(), reason, beforeTokens, afterTokens, summaryTokens)
 	result.Compacted = true
 	result.AfterTokens = afterTokens
 	if summaryResp != nil {
@@ -140,7 +140,7 @@ func (a *AgentLoop) compactActiveToolChainContext(ctx context.Context, originato
 		BeforeTokens: beforeTokens,
 		AfterTokens:  beforeTokens,
 	}
-	a.logger.Info("Starting active tool-chain compaction (%s): before=%d threshold=%d multiplier=%.2f",
+	a.logger.Debug("Starting active tool-chain compaction (%s): before=%d threshold=%d multiplier=%.2f",
 		reason, beforeTokens, a.contextManager.ContextWindow()-a.contextManager.ReservedTokens(), a.contextManager.TokenEstimateMultiplier())
 
 	llmSummaryPromptEvent, err := a.contextManager.GetActiveToolChainSummaryPromptEventWithActiveRequest(originatorID, parentOriginatorID, parentOriginatorVersion, a.renderedTaskState(), activeUserRequest)
@@ -148,7 +148,7 @@ func (a *AgentLoop) compactActiveToolChainContext(ctx context.Context, originato
 		return nil, fmt.Errorf("failed to get active tool-chain summary prompt event: %w", err)
 	}
 	if llmSummaryPromptEvent == nil {
-		a.logger.Info("Active tool-chain compaction skipped (%s): no completed tool-call boundary before recent-history window", reason)
+		a.logger.Debug("Active tool-chain compaction skipped (%s): no completed tool-call boundary before recent-history window", reason)
 		return result, nil
 	}
 
@@ -194,8 +194,8 @@ func (a *AgentLoop) compactActiveToolChainContext(ctx context.Context, originato
 	}
 	a.setActiveMessages(newMessages)
 	afterTokens := a.contextManager.EstimateTokens(a.activeMessages(), a.llmToolDefinitions)
-	a.logger.Info("Finished active tool-chain compaction (%s): after=%d summary_tokens=%d",
-		reason, afterTokens, a.contextManager.EstimateSummaryTokens(summaryResp.Message.Content))
+	a.logger.Info("[%s] compact %s ~%d → ~%d tokens (summary ~%d)",
+		a.currentProvider().GetModel(), reason, beforeTokens, afterTokens, a.contextManager.EstimateSummaryTokens(summaryResp.Message.Content))
 	result.Compacted = true
 	result.AfterTokens = afterTokens
 	result.Summary = summaryResp.Message.Content
@@ -236,7 +236,7 @@ func (a *AgentLoop) callSummaryModelWithRetries(ctx context.Context, message llm
 		if strings.TrimSpace(resp.Message.Content) != "" && len(resp.Message.ToolCalls) == 0 {
 			return resp, nil
 		}
-		a.logger.Info("Summary model returned invalid response on attempt %d: content_bytes=%d tool_calls=%d", attempt, len(resp.Message.Content), len(resp.Message.ToolCalls))
+		a.logger.Warn("Summary model returned invalid response on attempt %d: content_bytes=%d tool_calls=%d", attempt, len(resp.Message.Content), len(resp.Message.ToolCalls))
 	}
 	return llm.Response{}, fmt.Errorf("summary model returned empty or tool-call response after retries: content_bytes=%d tool_calls=%d", len(last.Message.Content), len(last.Message.ToolCalls))
 }
@@ -249,7 +249,7 @@ func (a *AgentLoop) callSummaryModel(ctx context.Context, message llm.Message) (
 		return llm.Response{}, err
 	}
 	provider := a.currentProvider()
-	a.logger.Info("Sending compaction summary request to LLM")
+	a.logger.Debug("Sending compaction summary request to LLM")
 	resp, err := llm.ChatContext(ctx, provider, "", []llm.Message{message}, nil, func(delta string) {})
 	if err != nil {
 		return llm.Response{}, err

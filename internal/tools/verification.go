@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/makkalot/caretz/internal/sandbox"
+	"github.com/makkalot/caretz/internal/uuid"
 	"github.com/makkalot/caretz/lib/llm"
 )
 
@@ -36,6 +38,37 @@ var verificationFailureOutput = regexp.MustCompile(`(?im)(?:^|[[:space:]])(?:FAI
 // RunVerificationCommand uses the same configured sandbox as other tools.
 func (r *Registry) RunVerificationCommand(ctx context.Context, command string) (VerificationResult, error) {
 	return r.RunVerificationCommandWithTimeout(ctx, command, 0)
+}
+
+// RunCommandWithPermissions runs a foreground command through the configured
+// sandbox. Unlike verification commands it can pause for live proxy permissions.
+// It never attempts a sandbox-off retry and does not call the model.
+func (r *Registry) RunCommandWithPermissions(ctx context.Context, command string) (VerificationResult, error) {
+	result := VerificationResult{Command: command, ExitCode: -1}
+	if r == nil {
+		return result, fmt.Errorf("tool registry is nil")
+	}
+	if command == "" {
+		return result, fmt.Errorf("command is empty")
+	}
+	if !r.IsToolEnabled("Bash") {
+		return result, fmt.Errorf("tool Bash is disabled")
+	}
+	cwd, err := r.workspaceDir()
+	if err != nil {
+		return result, err
+	}
+	arguments, err := json.Marshal(map[string]string{"command": command})
+	if err != nil {
+		return result, err
+	}
+	call := llm.ToolCall{ID: "command-" + uuid.NewV4().String(), Name: "Bash", Arguments: string(arguments)}
+	stdout, stderr, runErr := r.runSandboxed(ctx, cwd, command, sandbox.RunOptions{
+		TimeoutSeconds: sandbox.DefaultTimeoutSeconds,
+		Env:            ActorMetadataEnv(ctx), ReadOnly: r.PlanMode(),
+		AuthorizeNetwork: networkAuthorizer(ctx, call, command),
+	})
+	return r.classifyCommandResult(ctx, cwd, command, stdout, stderr, runErr, "run command")
 }
 
 // RunVerificationCommandWithTimeout runs command with timeoutSeconds, or the

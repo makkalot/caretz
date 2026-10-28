@@ -38,7 +38,7 @@ func (r *Registry) handleLsToolCall(ctx context.Context, lsTool llm.ToolCall) (l
 		}
 	}
 
-	r.logInfo("Ls tool called: path=%q limit=%d", targetPath, limit)
+	r.logDebug("Ls tool called: path=%q limit=%d", targetPath, limit)
 
 	absCwd, _ := filepath.Abs(cwd)
 	absTarget, _ := filepath.Abs(targetPath)
@@ -86,6 +86,6 @@ func (r *Registry) handleLsToolCall(ctx context.Context, lsTool llm.ToolCall) (l
 		output = "(empty directory)"
 	}
 
-	r.logInfo("Ls tool completed: %d entries (of %d total)", len(lines), totalEntries)
+	r.logDebug("Ls tool completed: %d entries (of %d total)", len(lines), totalEntries)
 	return llm.Message{Role: llm.RoleTool, Content: output, ToolCallID: lsTool.ID}, nil
 }

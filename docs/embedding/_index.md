@@ -79,3 +79,9 @@ go build -o embedded-caretz .
 variables for you. Pass model, workspace, tools, sandbox, and state options from
 your application. An embedding application may source those values from its own
 config system if they should not be compiled into the binary.
+
+For a complete app built this way, see
+[coderun](https://github.com/makkalot/caretz/tree/main/examples/coderun): a
+browser app where you describe a small Python program and watch the agent write
+and run it. Other runnable apps are listed in
+[`examples/`](https://github.com/makkalot/caretz/tree/main/examples).

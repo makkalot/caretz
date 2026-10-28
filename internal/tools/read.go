@@ -130,7 +130,7 @@ func (r *Registry) handleReadToolCall(ctx context.Context, readTool llm.ToolCall
 		return llm.Message{}, fmt.Errorf("json unmarshall read tool arguments: %w", err)
 	}
 
-	r.logInfo("Read tool called: %s (offset=%d, limit=%d)", args.FilePath, args.Offset, args.Limit)
+	r.logDebug("Read tool called: %s (offset=%d, limit=%d)", args.FilePath, args.Offset, args.Limit)
 	r.logDebug("Read arguments: %s", readTool.Arguments)
 
 	filePath, cwd, err := r.resolveWorkspacePath(args.FilePath)
@@ -148,7 +148,7 @@ func (r *Registry) handleReadToolCall(ctx context.Context, readTool llm.ToolCall
 		return llm.Message{}, fmt.Errorf("reading the file failed")
 	}
 	if IsBinaryContent(res, args.FilePath) {
-		r.logInfo("Read tool skipped binary contents for %s: %d bytes", filePath, len(res))
+		r.logDebug("Read tool skipped binary contents for %s: %d bytes", filePath, len(res))
 		return llm.Message{Role: llm.RoleTool, Content: FormatBinaryReadOutput(res, args.FilePath), ToolCallID: readTool.ID}, nil
 	}
 
@@ -165,7 +165,7 @@ func (r *Registry) handleReadToolCall(ctx context.Context, readTool llm.ToolCall
 	if endLine > totalLines {
 		endLine = totalLines
 	}
-	r.logInfo("Read tool completed for %s: lines %d-%d of %d, %d bytes", filePath, offset, endLine, totalLines, len(res))
+	r.logDebug("Read tool completed for %s: lines %d-%d of %d, %d bytes", filePath, offset, endLine, totalLines, len(res))
 	output := FormatReadOutput(res, args.FilePath, args.Offset, args.Limit)
 	return llm.Message{Role: llm.RoleTool, Content: output, ToolCallID: readTool.ID}, nil
 }

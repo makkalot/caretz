@@ -36,7 +36,7 @@ func (r *Registry) handleFindToolCall(ctx context.Context, findTool llm.ToolCall
 		limit = DefaultFindLimit
 	}
 
-	r.logInfo("Find tool called: pattern=%q path=%q limit=%d", args.Pattern, args.Path, limit)
+	r.logDebug("Find tool called: pattern=%q path=%q limit=%d", args.Pattern, args.Path, limit)
 
 	cwd, err := r.workspaceDir()
 	if err != nil {
@@ -117,6 +117,6 @@ func (r *Registry) handleFindToolCall(ctx context.Context, findTool llm.ToolCall
 		output += "\n" + strings.Join(notices, "\n")
 	}
 
-	r.logInfo("Find tool completed: %d results", resultCount)
+	r.logDebug("Find tool completed: %d results", resultCount)
 	return llm.Message{Role: llm.RoleTool, Content: output, ToolCallID: findTool.ID}, nil
 }

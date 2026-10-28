@@ -408,10 +408,9 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	discoveredSkills, err := skills.DiscoverSkills(skillDirs, logger)
 	if err != nil {
 		output.Warnf(stderr, "skill discovery failed: %v", err)
-	} else if len(discoveredSkills) > 0 {
-		logger.Info("Discovered %d skill(s)", len(discoveredSkills))
+	} else {
 		for _, s := range discoveredSkills {
-			logger.Info("  Skill: %s - %s (%s)", s.Name, s.Description, s.Location)
+			logger.Debug("  Skill: %s - %s (%s)", s.Name, s.Description, s.Location)
 		}
 	}
 	discoveredSkills = filterSkills(discoveredSkills, profile.Skills)
@@ -433,7 +432,7 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	if rgPath, err := exec.LookPath("rg"); err == nil {
 		if resolved, err := filepath.EvalSymlinks(rgPath); err == nil {
 			sandboxConfig.ExtraBinaries = append(sandboxConfig.ExtraBinaries, resolved)
-			logger.Info("Found rg at: %s (resolved: %s)", rgPath, resolved)
+			logger.Debug("Found rg at: %s (resolved: %s)", rgPath, resolved)
 		}
 	}
 
@@ -475,7 +474,6 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	runSandboxedOptions := sandboxRunner.RunContextOptions
 	if sandboxSettings.Disabled {
 		runSandboxedOptions = sandbox.RunUnsandboxed
-		logger.Info("Sandbox disabled by %s", disableSandboxEnv)
 	}
 	tavilyAPIKey := cmp.Or(os.Getenv("TAVILY_API_KEY"), fileConfig.SearchAPIKey("tavily"))
 	braveSearchAPIKey := cmp.Or(os.Getenv("BRAVE_SEARCH_API_KEY"), fileConfig.SearchAPIKey("brave"))
@@ -519,8 +517,6 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	agentInstructions, err := skills.LoadAgentInstructions(cwd)
 	if err != nil {
 		output.Warnf(stderr, "AGENTS.md could not be loaded: %v", err)
-	} else if agentInstructions != "" {
-		logger.Info("Loaded AGENTS.md project instructions")
 	}
 	startupResources := startupResources{}
 	if strings.TrimSpace(agentInstructions) != "" {
@@ -546,16 +542,15 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 		AgentInstructions: agentInstructions,
 		Tools:             registry.ToolDefinitions(),
 	})
-	if profile.SystemPrompt != nil || baseFlags.Changed["system-prompt"] || baseFlags.Changed["system-prompt-file"] {
-		logger.Info("Using custom system prompt with dynamic runtime sections")
-	}
-
-	if registry.BraveSearchAPIKey != "" {
-		logger.Info("Web search enabled via BRAVE_SEARCH_API_KEY")
-	}
-	if registry.TavilyAPIKey != "" {
-		logger.Info("Tavily web search/extract enabled via TAVILY_API_KEY")
-	}
+	logger.Info("%s", startupSummary(startupSummaryInput{
+		Profile:            fileConfig.Profile,
+		SandboxDisabled:    sandboxSettings.Disabled,
+		PlanMode:           baseFlags.PlanMode,
+		CustomSystemPrompt: profile.SystemPrompt != nil || baseFlags.Changed["system-prompt"] || baseFlags.Changed["system-prompt-file"],
+		Resources:          startupResources,
+		Brave:              registry.BraveSearchAPIKey != "",
+		Tavily:             registry.TavilyAPIKey != "",
+	}))
 
 	provider := llm.NewOpenAIProviderWithOptions(runtimeConfig.APIKey, runtimeConfig.BaseURL, runtimeConfig.Model, llm.OpenAIProviderOptions{
 		RequestTimeout:        runtimeConfig.LLMTimeout,
@@ -663,6 +658,60 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 		EndpointOverrideSource: endpointSource,
 		ExplicitModelSource:    explicitModelSource,
 	}, 0
+}
+
+type startupSummaryInput struct {
+	Profile            string
+	SandboxDisabled    bool
+	PlanMode           bool
+	CustomSystemPrompt bool
+	Resources          startupResources
+	Brave              bool
+	Tavily             bool
+}
+
+// startupSummary is the single -v line describing what a run was set up with.
+func startupSummary(in startupSummaryInput) string {
+	parts := []string{"startup profile=" + cmp.Or(in.Profile, "default")}
+	switch {
+	case in.SandboxDisabled:
+		parts = append(parts, "sandbox=off("+disableSandboxEnv+")")
+	case in.PlanMode:
+		parts = append(parts, "sandbox=on(read-only)")
+	default:
+		parts = append(parts, "sandbox=on")
+	}
+	if len(in.Resources.Context) > 0 {
+		parts = append(parts, "context="+strings.Join(in.Resources.Context, ","))
+	}
+	if in.CustomSystemPrompt {
+		parts = append(parts, "system-prompt=custom")
+	}
+	if len(in.Resources.Skills) > 0 {
+		parts = append(parts, "skills="+strings.Join(in.Resources.Skills, ","))
+	}
+	if len(in.Resources.Agents) > 0 {
+		parts = append(parts, "agents="+strings.Join(in.Resources.Agents, ","))
+	}
+	var web []string
+	if in.Brave {
+		web = append(web, "brave")
+	}
+	if in.Tavily {
+		web = append(web, "tavily")
+	}
+	if len(web) > 0 {
+		parts = append(parts, "web="+strings.Join(web, ","))
+	}
+	return strings.Join(parts, " ")
+}
+
+func skillNames(discovered []skills.Skill) string {
+	names := make([]string, 0, len(discovered))
+	for _, skill := range discovered {
+		names = append(names, skill.Name)
+	}
+	return strings.Join(names, ",")
 }
 
 func registerCustomTools(registry *tools.Registry, customTools []tools.Tool) error {
