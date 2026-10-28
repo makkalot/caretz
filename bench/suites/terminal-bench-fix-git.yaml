@@ -1,0 +1,6 @@
+name: terminal-bench-fix-git
+benchmark: terminal-bench
+timeout_seconds: 900
+tasks:
+  - id: fix-git
+    task_dir: bench/tasks/terminal-bench/fix-git

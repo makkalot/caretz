@@ -1,0 +1,115 @@
+# Everyday tasks in four difficulty tiers. Run one tier with --tier.
+# Verifiers grade only files in the workspace; question tasks ask the model to
+# save its answer to answer.txt or answer.json. `make test-bench-daily` checks
+# every verifier against its reference solution without a model.
+name: daily
+benchmark: local
+timeout_seconds: 600
+tasks:
+  # daily-simple: one input, one step.
+  - id: find-contact
+    tier: daily-simple
+    workspace: bench/workspaces/daily/find-contact
+    prompt_file: bench/tasks/daily/find-contact.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/find-contact/verify.py"
+  - id: shopping-total
+    tier: daily-simple
+    workspace: bench/workspaces/daily/shopping-total
+    prompt_file: bench/tasks/daily/shopping-total.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/shopping-total/verify.py"
+  - id: todo-add
+    tier: daily-simple
+    workspace: bench/workspaces/daily/todo-add
+    prompt_file: bench/tasks/daily/todo-add.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/todo-add/verify.py"
+  - id: rename-extensions
+    tier: daily-simple
+    workspace: bench/workspaces/daily/rename-extensions
+    prompt_file: bench/tasks/daily/rename-extensions.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/rename-extensions/verify.py"
+  - id: appointment-date
+    tier: daily-simple
+    workspace: bench/workspaces/daily/appointment-date
+    prompt_file: bench/tasks/daily/appointment-date.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/appointment-date/verify.py"
+
+  # daily-harder: several inputs, light computation, structured output.
+  - id: expense-by-category
+    tier: daily-harder
+    workspace: bench/workspaces/daily/expense-by-category
+    prompt_file: bench/tasks/daily/expense-by-category.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/expense-by-category/verify.py"
+  - id: organize-downloads
+    tier: daily-harder
+    workspace: bench/workspaces/daily/organize-downloads
+    prompt_file: bench/tasks/daily/organize-downloads.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/organize-downloads/verify.py"
+  - id: merge-contacts
+    tier: daily-harder
+    workspace: bench/workspaces/daily/merge-contacts
+    prompt_file: bench/tasks/daily/merge-contacts.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/merge-contacts/verify.py"
+  - id: meeting-action-items
+    tier: daily-harder
+    workspace: bench/workspaces/daily/meeting-action-items
+    prompt_file: bench/tasks/daily/meeting-action-items.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/meeting-action-items/verify.py"
+  - id: orders-json-to-csv
+    tier: daily-harder
+    workspace: bench/workspaces/daily/orders-json-to-csv
+    prompt_file: bench/tasks/daily/orders-json-to-csv.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/orders-json-to-csv/verify.py"
+
+  # daily-advanced: multi-step work with rules, constraints or noisy data.
+  - id: trip-budget
+    tier: daily-advanced
+    workspace: bench/workspaces/daily/trip-budget
+    prompt_file: bench/tasks/daily/trip-budget.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/trip-budget/verify.py"
+  - id: log-incident
+    tier: daily-advanced
+    workspace: bench/workspaces/daily/log-incident
+    prompt_file: bench/tasks/daily/log-incident.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/log-incident/verify.py"
+  - id: reconcile-invoices
+    tier: daily-advanced
+    workspace: bench/workspaces/daily/reconcile-invoices
+    prompt_file: bench/tasks/daily/reconcile-invoices.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/reconcile-invoices/verify.py"
+  - id: chore-schedule
+    tier: daily-advanced
+    workspace: bench/workspaces/daily/chore-schedule
+    prompt_file: bench/tasks/daily/chore-schedule.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/chore-schedule/verify.py"
+  - id: settings-migration
+    tier: daily-advanced
+    workspace: bench/workspaces/daily/settings-migration
+    prompt_file: bench/tasks/daily/settings-migration.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/settings-migration/verify.py"
+
+  # coding-simple: small fixes and features checked by hidden tests.
+  - id: py-fix-off-by-one
+    tier: coding-simple
+    workspace: bench/workspaces/daily/py-fix-off-by-one
+    prompt_file: bench/tasks/daily/py-fix-off-by-one.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/py-fix-off-by-one/verify.py"
+  - id: py-parse-duration
+    tier: coding-simple
+    workspace: bench/workspaces/daily/py-parse-duration
+    prompt_file: bench/tasks/daily/py-parse-duration.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/py-parse-duration/verify.py"
+  - id: py-add-cli-flag
+    tier: coding-simple
+    workspace: bench/workspaces/daily/py-add-cli-flag
+    prompt_file: bench/tasks/daily/py-add-cli-flag.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/py-add-cli-flag/verify.py"
+  - id: go-word-freq
+    tier: coding-simple
+    workspace: bench/workspaces/daily/go-word-freq
+    prompt_file: bench/tasks/daily/go-word-freq.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/go-word-freq/verify.py"
+  - id: sh-backup-script
+    tier: coding-simple
+    workspace: bench/workspaces/daily/sh-backup-script
+    prompt_file: bench/tasks/daily/sh-backup-script.md
+    evaluator_command: python3 -I "$BENCH_ROOT/verifiers/daily/sh-backup-script/verify.py"

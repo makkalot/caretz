@@ -1,0 +1,13 @@
+{
+  "invoices": {
+    "INV-1001": {"paid_cents": 120000, "balance_cents": 0, "status": "paid"},
+    "INV-1002": {"paid_cents": 45000, "balance_cents": 0, "status": "paid"},
+    "INV-1003": {"paid_cents": 50000, "balance_cents": 48000, "status": "partial"},
+    "INV-1004": {"paid_cents": 33000, "balance_cents": -3000, "status": "overpaid"},
+    "INV-1005": {"paid_cents": 0, "balance_cents": 64000, "status": "unpaid"},
+    "INV-1006": {"paid_cents": 21550, "balance_cents": 0, "status": "paid"},
+    "INV-1007": {"paid_cents": 125000, "balance_cents": 25000, "status": "partial"},
+    "INV-1008": {"paid_cents": 0, "balance_cents": 8990, "status": "unpaid"}
+  },
+  "unmatched_payments": ["P-508", "P-510", "P-511"]
+}

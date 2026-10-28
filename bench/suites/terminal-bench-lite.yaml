@@ -1,0 +1,20 @@
+name: terminal-bench-lite
+benchmark: terminal-bench
+timeout_seconds: 900
+tasks:
+  - id: log-summary-date-ranges
+    task_dir: bench/tasks/terminal-bench/log-summary-date-ranges
+  - id: fix-git
+    task_dir: bench/tasks/terminal-bench/fix-git
+  - id: fix-code-vulnerability
+    task_dir: bench/tasks/terminal-bench/fix-code-vulnerability
+    sandbox_disable: true
+  - id: openssl-selfsigned-cert
+    task_dir: bench/tasks/terminal-bench/openssl-selfsigned-cert
+  - id: git-leak-recovery
+    task_dir: bench/tasks/terminal-bench/git-leak-recovery
+  - id: nginx-request-logging
+    task_dir: bench/tasks/terminal-bench/nginx-request-logging
+    sandbox_disable: true
+  - id: modernize-scientific-stack
+    task_dir: bench/tasks/terminal-bench/modernize-scientific-stack

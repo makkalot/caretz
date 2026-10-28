@@ -1,0 +1,42 @@
+{{ $order := partial "docs-order.html" . }}
+{{ $i := -1 }}
+{{ range $k, $p := $order }}{{ if eq $p.RelPermalink $.RelPermalink }}{{ $i = $k }}{{ end }}{{ end }}
+
+<div class="docs-layout">
+  {{ partial "docs-sidebar.html" . }}
+
+  <article class="prose docs-article">
+    {{ if not (findRE `(?m)^# ` .RawContent 1) }}<h1>{{ .Title }}</h1>{{ end }}
+    {{ .Content }}
+
+    {{ if and .IsSection (ne .RelPermalink "/docs/") .RegularPages }}
+      <h2 id="in-this-section">In this section</h2>
+      <div class="docs-cards">
+        {{ range .RegularPages.ByWeight }}
+          <a class="doc-link" href="{{ .RelPermalink }}"><span>{{ .LinkTitle }}</span>{{ with .Description }}<small>{{ . }}</small>{{ end }}</a>
+        {{ end }}
+      </div>
+    {{ end }}
+
+    <footer class="docs-footer">
+      <nav class="docs-pager" aria-label="Previous and next page">
+        {{ if gt $i 0 }}{{ with index $order (sub $i 1) }}<a class="prev" href="{{ .RelPermalink }}"><small>Previous</small>{{ .LinkTitle }}</a>{{ end }}{{ else }}<span></span>{{ end }}
+        {{ if and (ge $i 0) (lt (add $i 1) (len $order)) }}{{ with index $order (add $i 1) }}<a class="next" href="{{ .RelPermalink }}"><small>Next</small>{{ .LinkTitle }}</a>{{ end }}{{ end }}
+      </nav>
+      {{ with .File }}
+        {{ $path := .Path }}
+        {{ if strings.Contains .Filename "/site/content/" }}{{ $path = printf "site/content/%s" .Path }}{{ end }}
+        <a class="docs-edit" href="{{ site.Params.githubURL }}/edit/main/{{ $path }}">Edit this page on GitHub</a>
+      {{ end }}
+    </footer>
+  </article>
+
+  {{ with .TableOfContents }}
+    {{ if findRE `<li>` . 1 }}
+      <aside class="docs-toc" aria-label="On this page">
+        <p class="docs-group">On this page</p>
+        {{ . }}
+      </aside>
+    {{ end }}
+  {{ end }}
+</div>

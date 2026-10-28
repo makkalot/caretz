@@ -1,0 +1,100 @@
+{{ define "main" }}
+<section class="hero">
+  <div class="hero-copy">
+    <p class="eyebrow">Open-source · local-first · almost zero dependencies</p>
+    <h1>caretz</h1>
+    <p class="hero-tagline">A small coding agent you can understand and make your own.</p>
+    <p class="lede">
+      Give caretz a task and it can inspect a codebase, run sandboxed commands,
+      edit files, and keep working through long sessions. Use local or hosted
+      models, customize its skills and tools, or embed the Go library in your
+      own application.
+    </p>
+    <div class="hero-actions">
+      <a class="button primary" href="#get-started">Get started</a>
+      <a class="button secondary" href="{{ "/docs/local-models/" | relURL }}">Run locally</a>
+      <a class="button secondary" href="{{ site.Params.githubURL }}">View on GitHub ↗</a>
+    </div>
+    <ul class="hero-facts">
+      <li>Local models first</li>
+      <li>Single Go binary</li>
+      <li>Only Go stdlib + golang.org/x</li>
+      <li>Sandboxed by default</li>
+    </ul>
+  </div>
+  <div class="hero-art">
+    <div class="hero-orbit" aria-hidden="true"></div>
+    <img class="hero-mascot" src="{{ "/images/caretz-pixel/caretz_main.png" | relURL }}" alt="Pixel-art Caretz mascot flying forward with a wrench">
+  </div>
+</section>
+
+<section class="proof-points" aria-label="Caretz highlights">
+  <article><span>01</span><div><h2>Sandboxed by default</h2><p>Read, edit, search, and run commands with workspace and network guardrails.</p></div></article>
+  <article><span>02</span><div><h2>Local or hosted</h2><p>Run local models as a first-class path or connect the same agent to an OpenAI-compatible provider.</p></div></article>
+  <article><span>03</span><div><h2>Almost dependency-free</h2><p>Just the Go standard library and three golang.org/x modules. No npm tree, a tiny supply-chain surface, and a build you can audit and compile offline.</p></div></article>
+</section>
+
+<section class="capabilities">
+  <div class="section-heading wide-heading">
+    <div><p class="eyebrow">More than a model wrapper</p><h2>Small core.<br>Serious workflow.</h2></div>
+    <p>Caretz combines the pieces needed for sustained coding work without turning them into a large runtime stack. The core module depends only on the Go standard library and <code>golang.org/x</code>, so you can copy the source to an offline machine, build it, and run it against your own GPU. Its compaction and task design grew from real use with local 27B Qwen models on a home RTX 3090, while the rest of the harness stays useful with any compatible provider.</p>
+  </div>
+  <div class="capabilities-grid">
+    <article><h3>Long-running sessions</h3><p>Persist, resume, inspect, and repair sessions while repeated compaction keeps limited context useful.</p></article>
+    <article><h3>Durable task state</h3><p>Carry the current goal and next action through compactions so smaller models are less likely to lose the thread.</p></article>
+    <article><h3>Skills and subagents</h3><p>Load project instructions, reusable skills, and focused sequential subagents from plain Markdown.</p></article>
+    <article><h3>Tools with guardrails</h3><p>Choose the file, search, shell, web, image, and integration tools a job needs under the sandbox policy.</p></article>
+    <article><h3>Terminal and ACP</h3><p>Work from the compact terminal UI or connect caretz to editors such as Zed through ACP.</p></article>
+    <article><h3>Extensible by design</h3><p>Strip down the prompt and tools, add custom capabilities, extend the CLI, or embed caretz as a Go library.</p></article>
+  </div>
+</section>
+
+<section class="getting-started" id="get-started">
+  <div class="section-heading wide-heading start-heading">
+    <div><p class="eyebrow">Getting started</p><h2>One binary.<br>Your model.</h2></div>
+    <p>Install caretz, save a provider with guided setup, and give it a task. Hosted providers are quick to connect, with the local llama.cpp path immediately alongside them.</p>
+  </div>
+
+  <ol class="steps">
+    <li class="step-row">
+      <div class="step-title"><span>1</span><div><h3>Install caretz</h3><p>Install the latest release to <code>~/bin/caretz</code>, or build it from source if you'd rather not run a script from the internet.</p></div></div>
+      <div class="step-content install-content">
+        {{ partial "install-tabs.html" . }}
+      </div>
+    </li>
+    <li class="step-row">
+      <div class="step-title"><span>2</span><div><h3>Connect your model</h3><p>Connect llama.cpp, Ollama, LM Studio, your own server, or a hosted provider.</p></div></div>
+      <div class="step-content terminal">
+        <div class="terminal-bar"><i></i><i></i><i></i><small>guided setup</small></div>
+        {{ highlight `caretz setup
+# choose a local or hosted provider` "bash" "" }}
+      </div>
+    </li>
+    <li class="step-row">
+      <div class="step-title"><span>3</span><div><h3>Give it a task</h3><p>Start an interactive session or run one prompt.</p></div></div>
+      <div class="step-content terminal">
+        <div class="terminal-bar"><i></i><i></i><i></i><small>terminal</small></div>
+        {{ highlight `caretz
+
+# or run one prompt
+caretz -p "explain this repository"` "bash" "" }}
+      </div>
+    </li>
+  </ol>
+
+</section>
+
+<section class="docs-preview">
+  <div class="section-heading wide-heading">
+    <div><p class="eyebrow">Documentation</p><h2>Go deeper.</h2></div>
+    <a class="text-link" href="{{ "/docs/" | relURL }}">View all docs →</a>
+  </div>
+  <div class="doc-links">
+    <a class="doc-link" href="{{ "/docs/local-models/" | relURL }}"><span>Local and smaller models</span><b>→</b></a>
+    <a class="doc-link" href="{{ "/docs/cli/" | relURL }}"><span>CLI and interactive usage</span><b>→</b></a>
+    <a class="doc-link" href="{{ "/docs/config/" | relURL }}"><span>Configuration</span><b>→</b></a>
+    <a class="doc-link" href="{{ "/docs/sessions/" | relURL }}"><span>Sessions and compaction</span><b>→</b></a>
+    <a class="doc-link" href="{{ "/docs/dependencies/" | relURL }}"><span>Dependencies and supply chain</span><b>→</b></a>
+  </div>
+</section>
+{{ end }}

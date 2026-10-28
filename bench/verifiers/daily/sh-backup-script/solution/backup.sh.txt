@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "usage: $0 SRC_DIR DEST_DIR" >&2
+  exit 1
+}
+
+[ "$#" -eq 2 ] || usage
+src="$1"
+dest="$2"
+[ -d "$src" ] || usage
+
+date="${BACKUP_DATE:-$(date +%F)}"
+mkdir -p "$dest"
+archive="$(cd "$dest" && pwd)/backup-$date.tar.gz"
+tar -czf "$archive" -C "$src" --exclude '*.tmp' .
+echo "$archive"

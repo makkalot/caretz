@@ -1,0 +1,5 @@
+- [ ] Send the revised budget to the team (owner: Priya, due: 2024-03-14)
+- [ ] Book the venue for the offsite (owner: Marco, due: 2024-03-15)
+- [ ] Fix the login bug reported by customers (owner: Tom, due: 2024-03-12)
+- [ ] Draft and share the customer survey (owner: Lena, due: 2024-03-20)
+- [ ] Share the onboarding checklist (owner: Marco, due: 2024-03-18)

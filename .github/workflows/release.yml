@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            bench/go.sum
+            integrations/slack/go.sum
+            integrations/telegram/go.sum
+            integrations/tools/go.sum
+            integrations/tui/go.sum
+
+      - name: Install Hugo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hugo
+
+      - name: Run CI target
+        run: make ci
+
+      - name: Verify generated files are committed
+        run: git diff --exit-code
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build binary
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist/package
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -trimpath -ldflags="-s -w -X github.com/makkalot/caretz/cli.Version=${VERSION} -X github.com/makkalot/caretz/cli.Commit=${COMMIT} -X github.com/makkalot/caretz/cli.BuildDate=${BUILD_DATE}" -o dist/package/caretz ./cmd/caretz
+          cp README.md dist/package/
+
+      - name: Package archive
+        run: |
+          cd dist/package
+          tar -czf "../caretz-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" .
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: caretz-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/caretz-${{ github.ref_name }}-${{ matrix.goos }}-${{ matrix.goarch }}.*
+          if-no-files-found: error
+          archive: false
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum caretz-* > checksums.txt
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/caretz-*
+            dist/checksums.txt

@@ -1,0 +1,9 @@
+name: swe-verified-one
+benchmark: swebench
+dataset_name: SWE-bench/SWE-bench_Verified
+split: test
+timeout_seconds: 1800
+tasks:
+  - id: django__django-11087
+    workspace: bench/workspaces/swebench/django__django-11087/repo
+    prompt_file: bench/tasks/swebench/django__django-11087.md

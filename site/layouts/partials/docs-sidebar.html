@@ -1,0 +1,53 @@
+{{ $cur := . }}
+<nav class="docs-sidebar" aria-label="Documentation">
+  <input type="checkbox" id="docs-nav-toggle" class="docs-nav-toggle">
+  <label for="docs-nav-toggle" class="docs-nav-label">Docs menu</label>
+  <div class="docs-nav-body">
+    {{ range site.Data.docs_groups }}
+      <p class="docs-group">{{ .group }}</p>
+      <ul>
+        {{ range .items }}
+          {{ with site.GetPage . }}
+            <li>
+              <a href="{{ .RelPermalink }}"{{ if eq .RelPermalink $cur.RelPermalink }} class="active" aria-current="page"{{ end }}>{{ .LinkTitle }}</a>
+              {{ if and .IsSection (ne .RelPermalink "/docs/") }}
+                <ul{{ if or (eq .RelPermalink $cur.RelPermalink) ($cur.IsDescendant .) }} class="current-section"{{ end }}>
+                  {{ range .RegularPages.ByWeight }}
+                    <li><a href="{{ .RelPermalink }}"{{ if eq .RelPermalink $cur.RelPermalink }} class="active" aria-current="page"{{ end }}>{{ .LinkTitle }}</a></li>
+                  {{ end }}
+                </ul>
+              {{ end }}
+            </li>
+          {{ end }}
+        {{ end }}
+      </ul>
+    {{ end }}
+  </div>
+</nav>
+<script>
+  // Keep the sidebar where the reader left it across page loads, and make sure
+  // the current page's link is visible.
+  (function () {
+    var nav = document.querySelector(".docs-sidebar");
+    if (!nav) return;
+    var key = "caretz-docs-sidebar-scroll";
+    try {
+      var saved = sessionStorage.getItem(key);
+      if (saved !== null) nav.scrollTop = parseInt(saved, 10) || 0;
+    } catch (e) {}
+    var active = nav.querySelector("a.active");
+    if (active) {
+      // Before the page scrolls, the sticky sidebar starts below the header,
+      // so only part of it is on screen.
+      var navTop = nav.getBoundingClientRect().top;
+      var visible = Math.min(nav.clientHeight, window.innerHeight - navTop);
+      var top = active.getBoundingClientRect().top - navTop + nav.scrollTop;
+      if (top < nav.scrollTop || top + active.offsetHeight > nav.scrollTop + visible) {
+        nav.scrollTop = top - visible / 3;
+      }
+    }
+    window.addEventListener("pagehide", function () {
+      try { sessionStorage.setItem(key, String(nav.scrollTop)); } catch (e) {}
+    });
+  })();
+</script>

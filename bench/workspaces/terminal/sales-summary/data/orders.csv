@@ -1,0 +1,7 @@
+order_id,sku,quantity,unit_price_cents,region
+1001,A100,2,1299,west
+1002,B200,1,4500,east
+1003,A100,1,1299,west
+1004,C300,3,875,south
+1005,B200,2,4500,east
+1006,D400,5,410,north

@@ -1,0 +1,24 @@
+<header class="site-header">
+  <a class="brand" href="{{ "/" | relURL }}" aria-label="caretz home">
+    <img class="brand-mark" src="{{ "/images/caretz-pixel/caretz_main.png" | relURL }}" alt="">
+    <span>caretz</span>
+  </a>
+  <nav class="site-nav" aria-label="Main navigation">
+    {{ range site.Menus.main }}
+      <a href="{{ .URL }}">{{ .Name }}</a>
+    {{ end }}
+    <button class="theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+      <svg class="theme-icon-dark" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      <svg class="theme-icon-light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1"/></svg>
+    </button>
+  </nav>
+  <script>
+    document.querySelector(".theme-toggle").addEventListener("click", function () {
+      var root = document.documentElement;
+      var current = root.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      var next = current === "dark" ? "light" : "dark";
+      root.dataset.theme = next;
+      try { localStorage.setItem("theme", next); } catch (e) {}
+    });
+  </script>
+</header>

@@ -1,0 +1,55 @@
+{
+  "exported_at": "2024-05-02T08:00:00Z",
+  "orders": [
+    {
+      "id": "A-1042",
+      "status": "shipped",
+      "customer": {"name": "Ana Ruiz", "email": "ana.ruiz@example.com"},
+      "items": [
+        {"sku": "MUG-01", "qty": 2, "unit_price_cents": 1250},
+        {"sku": "TEA-12", "qty": 1, "unit_price_cents": 899}
+      ]
+    },
+    {
+      "id": "A-1039",
+      "status": "delivered",
+      "customer": {"name": "Ben Okafor", "email": "ben@okafor.example"},
+      "items": [
+        {"sku": "KTL-02", "qty": 1, "unit_price_cents": 4599}
+      ]
+    },
+    {
+      "id": "A-1045",
+      "status": "cancelled",
+      "customer": {"name": "Carla Mendes", "email": "carla.m@example.com"},
+      "items": [
+        {"sku": "MUG-01", "qty": 6, "unit_price_cents": 1250}
+      ]
+    },
+    {
+      "id": "A-1041",
+      "status": "processing",
+      "customer": {"name": "David Cohen", "email": "david.cohen@example.com"},
+      "items": [
+        {"sku": "TEA-12", "qty": 3, "unit_price_cents": 899},
+        {"sku": "TEA-15", "qty": 2, "unit_price_cents": 1099},
+        {"sku": "SPN-03", "qty": 4, "unit_price_cents": 199}
+      ]
+    },
+    {
+      "id": "A-1040",
+      "status": "shipped",
+      "customer": {"name": "Emma Novak", "email": "emma.novak@example.com"},
+      "items": []
+    },
+    {
+      "id": "A-1043",
+      "status": "delivered",
+      "customer": {"name": "Farid Haddad", "email": "farid.h@example.com"},
+      "items": [
+        {"sku": "KTL-02", "qty": 1, "unit_price_cents": 4599},
+        {"sku": "MUG-01", "qty": 1, "unit_price_cents": 1250}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+baseURL: "https://caretz.dev/"
+locale: "en-us"
+title: "caretz"
+
+params:
+  description: "A small, sandboxed Go coding assistant with local-first models, durable sessions, skills, tools, and an embeddable core."
+  homeTitle: "caretz — small, sandboxed coding agent in Go"
+  githubURL: "https://github.com/makkalot/caretz"
+
+markup:
+  tableOfContents:
+    startLevel: 2
+    endLevel: 3
+  highlight:
+    noClasses: false
+  goldmark:
+    renderer:
+      unsafe: true
+
+module:
+  mounts:
+    - source: content
+      target: content
+    - source: ../docs
+      target: content/docs
+    - source: static
+      target: static
+    - source: assets
+      target: assets
+
+menus:
+  main:
+    - name: "Get started"
+      url: "/#get-started"
+      weight: 8
+    - name: "Docs"
+      pageRef: "/docs"
+      weight: 10
+    - name: "GitHub"
+      url: "https://github.com/makkalot/caretz"
+      weight: 20

@@ -1,0 +1,21 @@
+{{- /* Install options as tabs: pure CSS (radio + label), no JavaScript.
+       Keep the commands in sync with README.md and docs/installation.md. */ -}}
+<div class="terminal install-tabs">
+  <input type="radio" name="install-tab" id="install-tab-script" checked>
+  <input type="radio" name="install-tab" id="install-tab-source">
+  <div class="terminal-bar install-tab-bar">
+    <i></i><i></i><i></i>
+    <label for="install-tab-script">Install script</label>
+    <label for="install-tab-source">Build from source</label>
+  </div>
+  <div class="install-panel install-panel-script">
+    {{ highlight "curl -fsSL https://raw.githubusercontent.com/makkalot/caretz/main/install.sh | sh" "bash" "" }}
+    <p class="install-note">Detects your OS and architecture, verifies the checksum, and installs to <code>~/bin/caretz</code>.</p>
+  </div>
+  <div class="install-panel install-panel-source">
+    {{ highlight `git clone https://github.com/makkalot/caretz.git
+cd caretz
+make install` "bash" "" }}
+    <p class="install-note">Needs Go 1.25.8+, Git, and Make. Installs to <code>~/bin/caretz</code>; nothing beyond the Go standard library and <code>golang.org/x</code>.</p>
+  </div>
+</div>

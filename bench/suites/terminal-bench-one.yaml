@@ -1,0 +1,53 @@
+name: terminal-bench-one
+benchmark: terminal-bench
+timeout_seconds: 1800
+tasks:
+  - id: cancel-async-tasks
+    task_dir: bench/tasks/terminal-bench/cancel-async-tasks
+  - id: build-cython-ext
+    task_dir: bench/tasks/terminal-bench/build-cython-ext
+    sandbox_disable: true
+  - id: break-filter-js-from-html
+    task_dir: bench/tasks/terminal-bench/break-filter-js-from-html
+  - id: fix-code-vulnerability
+    task_dir: bench/tasks/terminal-bench/fix-code-vulnerability
+    sandbox_disable: true
+  - id: fix-git
+    task_dir: bench/tasks/terminal-bench/fix-git
+  - id: constraints-scheduling
+    task_dir: bench/tasks/terminal-bench/constraints-scheduling
+  - id: db-wal-recovery
+    task_dir: bench/tasks/terminal-bench/db-wal-recovery
+  - id: financial-document-processor
+    task_dir: bench/tasks/terminal-bench/financial-document-processor
+    sandbox_disable: true
+  - id: git-leak-recovery
+    task_dir: bench/tasks/terminal-bench/git-leak-recovery
+  - id: git-multibranch
+    task_dir: bench/tasks/terminal-bench/git-multibranch
+    sandbox_disable: true
+  - id: headless-terminal
+    task_dir: bench/tasks/terminal-bench/headless-terminal
+    sandbox_disable: true
+  - id: log-summary-date-ranges
+    task_dir: bench/tasks/terminal-bench/log-summary-date-ranges
+  - id: modernize-scientific-stack
+    task_dir: bench/tasks/terminal-bench/modernize-scientific-stack
+  - id: openssl-selfsigned-cert
+    task_dir: bench/tasks/terminal-bench/openssl-selfsigned-cert
+  - id: nginx-request-logging
+    task_dir: bench/tasks/terminal-bench/nginx-request-logging
+    sandbox_disable: true
+  - id: password-recovery
+    task_dir: bench/tasks/terminal-bench/password-recovery
+  - id: polyglot-c-py
+    task_dir: bench/tasks/terminal-bench/polyglot-c-py
+  - id: polyglot-rust-c
+    task_dir: bench/tasks/terminal-bench/polyglot-rust-c
+  - id: pypi-server
+    task_dir: bench/tasks/terminal-bench/pypi-server
+    sandbox_disable: true
+  - id: regex-log
+    task_dir: bench/tasks/terminal-bench/regex-log
+  - id: sanitize-git-repo
+    task_dir: bench/tasks/terminal-bench/sanitize-git-repo

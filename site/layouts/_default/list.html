@@ -1,0 +1,11 @@
+{{ define "main" }}
+<section class="page-heading">
+  <p class="eyebrow">caretz</p>
+  <h1>{{ .Title }}</h1>
+  {{ with .Description }}<p>{{ . }}</p>{{ end }}
+</section>
+
+{{ with .Content }}
+  <section class="prose">{{ . }}</section>
+{{ end }}
+{{ end }}

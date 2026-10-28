@@ -1,0 +1,5 @@
+.git
+.env
+bin/caretz
+bin/caretz-linux-amd64
+bin/caretz-linux-arm64

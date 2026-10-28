@@ -1,0 +1,7 @@
+{{ define "main" }}
+<article class="prose article">
+  <p class="eyebrow">Docs</p>
+  {{ with .Title }}<h1>{{ . }}</h1>{{ end }}
+  {{ .Content }}
+</article>
+{{ end }}

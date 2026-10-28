@@ -1,0 +1,36 @@
+# Docs sidebar groups, in order. Each item is a page or section path under
+# content/docs; a section lists its own pages beneath it, ordered by `weight`.
+# This order also drives the prev/next links at the bottom of each page.
+- group: Start here
+  items:
+    - /docs
+    - /docs/installation
+    - /docs/local-models
+- group: Everyday use
+  items:
+    - /docs/cli
+    - /docs/sessions
+    - /docs/goals
+    - /docs/schedules
+- group: Sandboxing
+  items:
+    - /docs/sandboxing
+- group: Configure
+  items:
+    - /docs/config
+    - /docs/profiles
+    - /docs/customization
+    - /docs/tools
+- group: Integrations
+  items:
+    - /docs/acp
+    - /docs/herdr
+- group: Build on caretz
+  items:
+    - /docs/embedding
+    - /docs/extending-cli
+    - /docs/dependencies
+    - /docs/contributing
+- group: Help
+  items:
+    - /docs/troubleshooting

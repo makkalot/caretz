@@ -1,0 +1,45 @@
+package wordfreq
+
+import (
+	"reflect"
+	"testing"
+)
+
+func TestHiddenTopWords(t *testing.T) {
+	text := "The cat and the hat. THE CAT! A dog's dog; the end, cat... and"
+	cases := []struct {
+		n    int
+		want []WordCount
+	}{
+		{1, []WordCount{{"the", 4}}},
+		{3, []WordCount{{"the", 4}, {"cat", 3}, {"and", 2}}},
+		{6, []WordCount{{"the", 4}, {"cat", 3}, {"and", 2}, {"a", 1}, {"dog", 1}, {"dog's", 1}}},
+		{100, []WordCount{{"the", 4}, {"cat", 3}, {"and", 2}, {"a", 1}, {"dog", 1}, {"dog's", 1}, {"end", 1}, {"hat", 1}}},
+	}
+	for _, tc := range cases {
+		got := TopWords(text, tc.n)
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("TopWords(text, %d) = %v, want %v", tc.n, got, tc.want)
+		}
+	}
+}
+
+func TestHiddenTopWordsEmpty(t *testing.T) {
+	if got := TopWords("hello world", 0); len(got) != 0 {
+		t.Errorf("TopWords(n=0) = %v, want empty", got)
+	}
+	if got := TopWords("hello world", -2); len(got) != 0 {
+		t.Errorf("TopWords(n=-2) = %v, want empty", got)
+	}
+	if got := TopWords("  ... 123 !!", 5); len(got) != 0 {
+		t.Errorf("TopWords(no words) = %v, want empty", got)
+	}
+}
+
+func TestHiddenTopWordsDigitsSeparateWords(t *testing.T) {
+	got := TopWords("go2go Go", 5)
+	want := []WordCount{{"go", 3}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("TopWords(go2go Go) = %v, want %v", got, want)
+	}
+}

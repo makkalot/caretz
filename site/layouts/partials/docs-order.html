@@ -1,0 +1,17 @@
+{{- /* Flatten the sidebar (data/docs_groups.yaml) into reading order. */ -}}
+{{- $out := slice -}}
+{{- range site.Data.docs_groups -}}
+  {{- range .items -}}
+    {{- with site.GetPage . -}}
+      {{- $out = $out | append . -}}
+      {{- if and .IsSection (ne .RelPermalink "/docs/") -}}
+        {{- range .RegularPages.ByWeight -}}
+          {{- $out = $out | append . -}}
+        {{- end -}}
+      {{- end -}}
+    {{- else -}}
+      {{- errorf "docs_groups.yaml: no page at %q" . -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+{{- return $out -}}

@@ -1,0 +1,68 @@
+# Environment
+.env
+
+# Build artifacts
+bin/
+
+# Go binary
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test binary
+*.test
+
+# Go coverage
+*.out
+*.prof
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local state from previous builds stays untracked.
+.caret/
+.caretz/*
+!.caretz/skills/
+!.caretz/skills/**
+!.caretz/agents/
+!.caretz/agents/**
+.bench/
+bench/runs/
+bench/models/
+/caretz-debug/
+
+# Hugo site output
+site/public/
+site/resources/
+site/.hugo_build.lock
+.gocache/
+
+# .doccheck generated artifacts (source: extract/gocompile/cfgcheck/rescheck + README)
+.doccheck/blocks/
+.doccheck/gocache/
+.doccheck/tmp/
+.doccheck/gomod/*
+!.doccheck/gomod/go.mod
+!.doccheck/gomod/go.sum
+.doccheck/bin-cfgcheck
+.doccheck/bin-rescheck
+.doccheck/inventory.json
+.doccheck/flags.json
+.doccheck/cli_flags.json
+Library/
+
+# Local agent skill installs and scratch SSH state
+.agents/
+skills-lock.json
+.known_hosts.tmp
+__pycache__/

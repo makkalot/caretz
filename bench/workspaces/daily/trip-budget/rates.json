@@ -1,0 +1,9 @@
+{
+  "note": "Value of 1 unit of each currency in EUR.",
+  "to_eur": {
+    "EUR": 1.0,
+    "CHF": 1.04,
+    "GBP": 1.17,
+    "USD": 0.92
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "user": {
+    "name": "makka"
+  },
+  "appearance": {
+    "theme": "dark",
+    "font_size_px": 16,
+    "language": "en"
+  },
+  "editor": {
+    "tab_width": 4,
+    "show_whitespace": false,
+    "word_wrap": false,
+    "autosave": {
+      "enabled": true,
+      "interval_seconds": 300
+    }
+  },
+  "network": {
+    "timeout_seconds": 30,
+    "retries": 3,
+    "proxy": null,
+    "offline_mode": false
+  }
+}

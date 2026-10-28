@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Make CI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            bench/go.sum
+            integrations/slack/go.sum
+            integrations/telegram/go.sum
+            integrations/tools/go.sum
+            integrations/tui/go.sum
+
+      - name: Install CI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hugo bubblewrap
+
+      - name: Run CI target
+        run: make ci
+
+      - name: Verify generated files are committed
+        run: git diff --exit-code
+
+  doccheck:
+    name: Doc examples check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: .doccheck/gomod/go.mod
+          cache-dependency-path: |
+            go.sum
+            .doccheck/gomod/go.sum
+
+      - name: Install Hugo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y hugo
+
+      # bin/caretz is needed by the CLI-flags stage (--help probing)
+      - name: Build caretz binary
+        run: make build
+
+      - name: Run doc checks
+        run: .doccheck/run_all.sh
+
+  linux-sandbox:
+    name: Linux sandbox
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
+      # which bubblewrap needs.
+      - name: Allow unprivileged user namespaces
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Run native sandbox integration tests
+        env:
+          CARETZ_RUN_SANDBOX_INTEGRATION: "1"
+        run: go test ./internal/sandbox -count=1 -v
+
+  macos-sandbox:
+    name: macOS sandbox
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run tests
+        run: go test ./...
+
+      - name: Run native sandbox integration tests
+        env:
+          CARETZ_RUN_SANDBOX_INTEGRATION: "1"
+        run: go test ./internal/sandbox -v

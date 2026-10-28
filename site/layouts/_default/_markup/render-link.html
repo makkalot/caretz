@@ -1,0 +1,11 @@
+{{- $url := urls.Parse .Destination -}}
+{{- $href := .Destination -}}
+{{- if strings.HasSuffix $url.Path ".md" -}}
+  {{- with .Page.GetPage $url.Path -}}
+    {{- $href = .RelPermalink -}}
+    {{- with $url.Fragment -}}
+      {{- $href = printf "%s#%s" $href . -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
+<a href="{{ $href | safeURL }}"{{ with .Title }} title="{{ . }}"{{ end }}>{{ .Text | safeHTML }}</a>

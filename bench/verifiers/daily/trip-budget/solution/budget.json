@@ -1,0 +1,11 @@
+{
+  "days": [
+    {"date": "2024-06-03", "total_eur": 121.16, "over_budget": false},
+    {"date": "2024-06-04", "total_eur": 136.24, "over_budget": false},
+    {"date": "2024-06-05", "total_eur": 186.73, "over_budget": true},
+    {"date": "2024-06-06", "total_eur": 136.77, "over_budget": false},
+    {"date": "2024-06-07", "total_eur": 465.06, "over_budget": true}
+  ],
+  "total_eur": 1045.96,
+  "over_budget_dates": ["2024-06-05", "2024-06-07"]
+}

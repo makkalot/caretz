@@ -1,0 +1,9 @@
+name: swe-one
+benchmark: swebench
+dataset_name: SWE-bench/SWE-bench_Lite
+split: test
+timeout_seconds: 1800
+tasks:
+  - id: sympy__sympy-20590
+    workspace: bench/workspaces/swebench/sympy__sympy-20590/repo
+    prompt_file: bench/tasks/swebench/sympy__sympy-20590.md

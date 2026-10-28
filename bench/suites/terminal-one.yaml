@@ -1,0 +1,8 @@
+name: terminal-one
+benchmark: local
+timeout_seconds: 900
+tasks:
+  - id: sales-summary
+    workspace: bench/workspaces/terminal/sales-summary
+    prompt_file: bench/tasks/terminal/sales-summary.md
+    evaluator_command: bash "$BENCH_ROOT/verifiers/terminal/sales-summary/run.sh"
