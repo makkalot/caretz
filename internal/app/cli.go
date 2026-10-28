@@ -17,10 +17,14 @@ type agentCommandOptions struct {
 	SessionID  string `flag:"s" help:"Session ID to resume (generates new UUID if omitted)" group:"Session and input"`
 	Adapter    string `flag:"adapter" help:"Session adapter namespace to open: cli, tui, slack, or telegram. Defaults to tui interactively and cli with -p." group:"Session and input"`
 	Incognito  bool   `flag:"incognito" help:"Keep the agent session in memory instead of writing session files" group:"Session and input"`
+	StartPeers bool   `flag:"start-peers" help:"Start configured peer bots that are not running; in Herdr they open in a bots tab" group:"Session and input"`
+	MainPeer   string `flag:"main-peer" help:"Run this peer bot in the terminal instead of a root session; root forces a root session (overrides peers.main in config)" group:"Session and input"`
 	baseFlagValues
 	Output  string `flag:"output" help:"Output mode: compact or detailed (overrides config and CARETZ_OUTPUT)" group:"Output and diagnostics"`
 	Theme   string `flag:"theme" help:"Color theme: ansi, catppuccin-mocha, dracula, github-dark, or tokyo-night (overrides config and CARETZ_THEME)" group:"Output and diagnostics"`
 	Version bool   `flag:"version" help:"Print version information and exit" group:"General"`
+	// peerName runs the session as the named peer bot (`caretz peer <name>`).
+	peerName string
 }
 
 type acpCommandOptions struct {
@@ -74,8 +78,17 @@ func newCaretzCLICommand(env cliEnvironment) *clicmd.Command {
 			return runACPServerWithAllowedModels(ctx, rt, os.Stdin, env.stdout, env.stderr, values.AllowedModels)
 		},
 	}
+	// A bot is a normal session that keeps running, so it takes every root flag.
+	peer := &clicmd.Command{
+		Use: "caretz peer NAME", Short: "Run a configured peer bot in this terminal", InheritRootOptions: true, Args: clicmd.ExactArgs(1),
+		Run: func(ctx context.Context, result *clicmd.Result) int {
+			values := *result.RootOptions.Value.(*agentCommandOptions)
+			values.peerName = result.Args[0]
+			return runAgentCommand(ctx, result.RootOptions, values, env.stdout, env.stderr, env.options)
+		},
+	}
 	session := newSessionCLICommand(env)
-	root.AddCommand(setup, newAuthCLICommand(env), newModelsCLICommand(env), session, acp)
+	root.AddCommand(setup, newAuthCLICommand(env), newModelsCLICommand(env), session, acp, peer)
 	return root
 }
 

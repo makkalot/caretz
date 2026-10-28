@@ -21,6 +21,23 @@ func main() {
 	yamls, _ := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	for _, f := range yamls {
 		data, _ := os.ReadFile(f)
+		if strings.HasPrefix(filepath.Base(f), "docs_peers__") {
+			// Peer-only frontmatter: confirm the runtime accepts it on a peer.
+			content := "---\n" + strings.TrimSpace(string(data)) + "\nmode: peer\ndescription: doc example\n---\n\nBody text for the bot.\n"
+			fm, _, err := subagents.Parse([]byte(content))
+			if err != nil {
+				fmt.Printf("  FAIL  %-40s peer frontmatter: %v\n", filepath.Base(f), err)
+				bad++
+				continue
+			}
+			if fm.Workspace == "" || len(fm.AcceptFrom) == 0 {
+				fmt.Printf("  FAIL  %-40s peer fields not parsed: workspace=%q accept_from=%v\n", filepath.Base(f), fm.Workspace, fm.AcceptFrom)
+				bad++
+				continue
+			}
+			fmt.Printf("  PASS  %-40s peer workspace=%q accept_from=%v\n", filepath.Base(f), fm.Workspace, fm.AcceptFrom)
+			continue
+		}
 		content := "---\n" + strings.TrimSpace(string(data)) + "\nmode: subagent\ndescription: doc example\n---\n\nBody text for the agent.\n"
 		fm, body, err := subagents.Parse([]byte(content))
 		if err != nil {
@@ -71,6 +88,19 @@ func main() {
 				continue
 			}
 			fmt.Printf("  PASS  %-40s skill name=%q desc=%q\n", base, fm.Name, truncate(fm.Description))
+		case strings.HasPrefix(base, "docs_peers__"):
+			fm, body, err := subagents.Parse(data)
+			if err != nil {
+				fmt.Printf("  FAIL  %-40s peer frontmatter: %v\n", base, err)
+				bad++
+				continue
+			}
+			if fm.Mode != subagents.ModePeer || strings.TrimSpace(body) == "" {
+				fmt.Printf("  FAIL  %-40s peer mode=%q, body empty=%v\n", base, fm.Mode, strings.TrimSpace(body) == "")
+				bad++
+				continue
+			}
+			fmt.Printf("  PASS  %-40s peer desc=%q denied=%v\n", base, truncate(fm.Description), keys(subagents.DisabledTools(fm.Permission)))
 		case strings.Contains(base, "customization_subagents__"):
 			fm, body, err := subagents.Parse(data)
 			if err != nil {
