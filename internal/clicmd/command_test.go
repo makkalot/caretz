@@ -258,3 +258,61 @@ func TestAddCommandRejectsDuplicate(t *testing.T) {
 }
 
 var _ flag.Value = (*customValue)(nil)
+
+type listValue []string
+
+func (v *listValue) String() string     { return strings.Join(*v, ",") }
+func (v *listValue) Set(s string) error { *v = append(*v, s); return nil }
+
+func TestFlagArgsReemitsSetFlagsByOwner(t *testing.T) {
+	type rootOptions struct {
+		Profile string    `flag:"profile"`
+		Plan    bool      `flag:"plan"`
+		Roots   listValue `flag:"read-root"`
+		Session string    `flag:"s"`
+	}
+	type childOptions struct {
+		Force bool `flag:"force"`
+	}
+	rootValues, childValues := rootOptions{}, childOptions{}
+	root := &Command{Use: "tool", Options: &rootValues, Args: NoArgs}
+	child := &Command{Use: "tool run NAME", Options: &childValues, InheritRootOptions: true, Args: ExactArgs(1)}
+	root.AddCommand(child)
+	args := []string{"--profile", "foo", "run", "bot", "--plan", "--read-root=a", "-s", "id", "--force", "--read-root", "b"}
+	result, err := root.Parse(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(result.RootOptions.FlagArgs("s"), " ")
+	if want := "--profile=foo --plan=true --read-root=a --read-root=b"; got != want {
+		t.Fatalf("root FlagArgs = %q, want %q", got, want)
+	}
+	if got := strings.Join(result.Options.FlagArgs(), " "); got != "--force=true" {
+		t.Fatalf("child FlagArgs = %q", got)
+	}
+
+	// The emitted tokens parse back to the same values.
+	again := rootOptions{}
+	reparse := &Command{Use: "tool", Options: &again, Args: NoArgs}
+	if _, err := reparse.Parse(result.RootOptions.FlagArgs("s")); err != nil {
+		t.Fatal(err)
+	}
+	if again.Profile != "foo" || !again.Plan || fmt.Sprint(again.Roots) != "[a b]" || again.Session != "" {
+		t.Fatalf("reparsed = %+v", again)
+	}
+}
+
+func TestFlagArgsOnRootCommand(t *testing.T) {
+	type rootOptions struct {
+		Model string `flag:"model"`
+	}
+	values := rootOptions{}
+	root := &Command{Use: "tool", Options: &values, Args: NoArgs}
+	result, err := root.Parse([]string{"-model", "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(result.RootOptions.FlagArgs(), " "); got != "--model=x" {
+		t.Fatalf("FlagArgs = %q", got)
+	}
+}

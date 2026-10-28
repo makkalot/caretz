@@ -33,6 +33,19 @@ offer a resume command because they have no saved session.
 Running `/clear` updates Herdr to restore the newly created session. Quitting
 Caretz releases the pane immediately instead of leaving stale agent state.
 
+## Bots get their own panes
+
+If the workspace defines [peer bots](peers.md), starting `caretz --start-peers`
+in a Herdr pane also opens a `bots` tab with one pane per bot that is not
+already running; a plain `caretz` leaves the bots alone. You can
+[split bots across several tabs](peers.md#run-it) and pick rows or columns for
+each tab. Each
+pane runs `caretz peer <name>` with the flags you started `caretz` with. Herdr's
+agent list shows each bot by its name, with its working, idle, or blocked state,
+so you can see at a glance which bot is busy or waiting for an approval.
+Restoring the pane reopens the same bot with the same flags. Focus a bot's pane
+to talk to it directly.
+
 ## Current boundaries
 
 The integration applies to Caretz's built-in interactive terminal UI. One-shot

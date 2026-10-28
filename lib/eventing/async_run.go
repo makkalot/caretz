@@ -59,6 +59,8 @@ type AsyncRunResult struct {
 	SourceID  string `json:"source_id,omitempty"`
 	Status    string `json:"status"`
 	Error     string `json:"error,omitempty"`
+	// Response is the final assistant text of a foreground run, when any.
+	Response string `json:"response,omitempty"`
 }
 
 func NewAsyncRunRequested(originatorID string, request AsyncRunRequest) *types.Event {

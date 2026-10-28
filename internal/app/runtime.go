@@ -18,6 +18,7 @@ import (
 	"github.com/makkalot/caretz/internal/log"
 	"github.com/makkalot/caretz/internal/loopguard"
 	"github.com/makkalot/caretz/internal/output"
+	"github.com/makkalot/caretz/internal/peers"
 	"github.com/makkalot/caretz/internal/sandbox"
 	"github.com/makkalot/caretz/internal/schedules"
 	"github.com/makkalot/caretz/internal/sessiontools"
@@ -415,7 +416,8 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	}
 	sandboxSettings.ReadableRoots = append(sandboxSettings.ReadableRoots, runtimeReadableResourceRoots(skillDirs, agentsDirs)...)
 	sandboxSettings.ReadOnlyPaths = appendUniqueStrings(sandboxSettings.ReadOnlyPaths, agentsDirs...)
-	sandboxSettings.HiddenPaths = []string{homeConfigPath, projectConfigPath, config.CredentialsPath(homeConfigPath)}
+	// The peer run directory holds the message signing key and spools.
+	sandboxSettings.HiddenPaths = []string{homeConfigPath, projectConfigPath, config.CredentialsPath(homeConfigPath), peers.RunRoot(configRoot)}
 	disableTasks := resolveDisableTasks(fileConfig, baseFlags.TaskMode)
 	guardFlags := loopGuardFlags{Mode: baseFlags.LoopGuard, Model: baseFlags.LoopGuardModel, Reasoning: baseFlags.LoopGuardReasoning}
 	if baseFlags.Changed["loop-guard-check-every"] {
@@ -553,8 +555,11 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 		output.Warnf(stderr, "subagent discovery failed: %v", err)
 	} else {
 		configuredAgents = filterAgents(configuredAgents, profile.Agents)
-		for _, configuredAgent := range configuredAgents {
+		for _, configuredAgent := range subagents.Subagents(configuredAgents) {
 			startupResources.Agents = append(startupResources.Agents, configuredAgent.Name)
+		}
+		for _, configuredPeer := range subagents.Peers(configuredAgents) {
+			startupResources.Peers = append(startupResources.Peers, configuredPeer.Name)
 		}
 	}
 
