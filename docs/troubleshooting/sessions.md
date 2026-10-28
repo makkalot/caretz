@@ -14,7 +14,7 @@ Verify:
 - A skill is `<root>/skills/<name>/SKILL.md`.
 - Its frontmatter has `name` and `description`, and `name` matches the directory.
 - A subagent is `<root>/agents/<name>.md`.
-- Its frontmatter has `description` and exactly `mode: subagent`.
+- Its frontmatter has `description` and `mode: subagent`. Agents with `mode: peer` are [peer bots](../peers.md): they don't appear in `@name` completion, and you start them with `caretz peer <name>`.
 - The file has a non-empty prompt body.
 - You launched Caretz from the intended workspace or supplied `--workspace`/`--config-root`.
 

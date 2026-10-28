@@ -358,7 +358,7 @@ func TestDirectoryModelTUIShowsRuleAndReplaysSwitches(t *testing.T) {
 	_, stderrBuf, restore := setupTUIStreams(t, "/exit\n")
 	defer restore()
 	resources := startupResources{ModelRule: "model rule ~/src/a/c (config.json): allow [local/*]", ModelRulePath: "~/src/a/c"}
-	if err := startTUI(session, log.New(), "qwen-a", "local/a", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, resources, scheduleDefaults(nil), tuiHooks{}); err != nil {
+	if err := startTUI(session, log.New(), "qwen-a", "local/a", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, resources, scheduleDefaults(nil), tuiHooks{}, tuiPeerOptions{}); err != nil {
 		t.Fatalf("startTUI() error = %v", err)
 	}
 	got := stderrBuf.String()

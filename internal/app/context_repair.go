@@ -183,8 +183,12 @@ func outstandingPendingToolCalls(order []string, pending map[string]llm.ToolCall
 	return calls
 }
 
-func requireSessionRepairCheck(sessionsDir, sessionID string) error {
-	sessionDir, _, err := explorer.FindSessionDir(sessionsDir, sessionID)
+func requireSessionRepairCheck(sessionsDir, sessionID string, requestedAdapter ...string) error {
+	adapter := ""
+	if len(requestedAdapter) > 0 {
+		adapter = requestedAdapter[0]
+	}
+	sessionDir, _, err := explorer.FindSessionDirWithAdapter(sessionsDir, sessionID, adapter)
 	if err != nil {
 		return err
 	}
