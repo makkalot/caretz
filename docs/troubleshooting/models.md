@@ -65,6 +65,14 @@ request's timing and token counts, without printing the API key. `-vv` adds
 token-estimate calibration and full tool arguments. Increase `--llm-timeout` for slow local models and use
 `--llm-max-attempts 1` while diagnosing deterministic request errors.
 
+## ChatGPT Plan Errors
+
+`not signed in` or `run caretz auth login chatgpt`: the tokens were revoked,
+expired beyond refresh, or never saved. Run the command the error names. A 403 saying the
+account cannot use its plan in other apps comes from OpenAI, not caretz; check
+the plan in ChatGPT. For the usage limit, see
+[Use your ChatGPT plan](../config/chatgpt.md#when-your-plan-runs-out).
+
 ## Local Setup Connection Test Fails
 
 `caretz setup` tests the selected provider's `/models` endpoint before saving.

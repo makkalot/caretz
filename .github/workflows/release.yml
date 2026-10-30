@@ -28,10 +28,10 @@ jobs:
             integrations/tools/go.sum
             integrations/tui/go.sum
 
-      - name: Install Hugo
+      - name: Install CI dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y hugo
+          sudo apt-get install -y hugo bubblewrap
 
       - name: Run CI target
         run: make ci

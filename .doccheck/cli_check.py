@@ -33,13 +33,13 @@ for kind in ("skill", "agent"):
 COMMAND_FLAGS[("local",)] = command_flags("local")
 for action in ("start", "stop", "restart", "status", "logs", "models"):
     COMMAND_FLAGS[("local", action)] = command_flags("local", action)
-for action in ("set", "rm", "list"):
+for action in ("set", "rm", "list", "login", "logout"):
     COMMAND_FLAGS[("auth", action)] = command_flags("auth", action)
 
 SESSION_ACTIONS = {"list", "explore", "inspect", "repair", "trim"}
 RESOURCE_ACTIONS = {"install", "upgrade"}
 LOCAL_ACTIONS = {"start", "stop", "restart", "status", "logs", "models"}
-AUTH_ACTIONS = {"set", "rm", "list"}
+AUTH_ACTIONS = {"set", "rm", "list", "login", "logout"}
 SUBCOMMANDS = ("session", "skill", "agent", "acp", "setup", "local", "models", "auth")
 
 # ---- known-good vocabularies ------------------------------------------------

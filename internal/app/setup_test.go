@@ -24,7 +24,7 @@ func TestSetupPresets(t *testing.T) {
 		want    map[string]string
 	}{
 		{"local", localSetupPresets, map[string]string{"llama.cpp": "http://127.0.0.1:8080/v1", "ollama": "http://127.0.0.1:11434/v1", "lmstudio": "http://127.0.0.1:1234/v1", "local": "http://127.0.0.1:8080/v1"}},
-		{"hosted", hostedSetupPresets, map[string]string{"openai": "https://api.openai.com/v1", "openrouter": "https://openrouter.ai/api/v1", "groq": "https://api.groq.com/openai/v1", "together": "https://api.together.xyz/v1", "mistral": "https://api.mistral.ai/v1", "opencode-go": "https://opencode.ai/zen/go/v1", "custom": "https://api.example.com/v1"}},
+		{"hosted", hostedSetupPresets, map[string]string{"openai": "https://api.openai.com/v1", "chatgpt": config.ChatGPTBaseURL, "openrouter": "https://openrouter.ai/api/v1", "groq": "https://api.groq.com/openai/v1", "together": "https://api.together.xyz/v1", "mistral": "https://api.mistral.ai/v1", "opencode-go": "https://opencode.ai/zen/go/v1", "custom": "https://api.example.com/v1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -372,6 +372,44 @@ func TestSetupConfiguresWebSearchAndImageAnalysis(t *testing.T) {
 	cfg = loadSetupConfig(t, path)
 	if err := validateLocalImageModel(cfg, cfg.Profiles["general"].ToolConfig["localImage"]); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSetupSignsInWithChatGPT(t *testing.T) {
+	t.Setenv(config.CredentialsFileEnv, "")
+	path := filepath.Join(t.TempDir(), "config.json")
+	attempts := 0
+	var stdout, stderr bytes.Buffer
+	// Hosted, ChatGPT plan, default provider key, try again after the failed
+	// sign-in, the second model, then skip web search.
+	w := &setupWizard{ctx: context.Background(), in: strings.NewReader("2\n2\n\n1\n2\n\n"), out: &stdout, errOut: &stderr,
+		signIn: func(_ context.Context, homePath, providerKey string, _, _ io.Writer) ([]string, bool, error) {
+			attempts++
+			if homePath != path || providerKey != "chatgpt" {
+				t.Errorf("signIn(%q, %q)", homePath, providerKey)
+			}
+			if attempts == 1 {
+				return nil, false, errors.New("browser closed")
+			}
+			return []string{"gpt-6.1-sol", "gpt-6-luna"}, false, nil
+		}}
+	w.reader = bufio.NewReader(w.in)
+	if err := w.run(path); err != nil {
+		t.Fatalf("run: %v stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+	if attempts != 2 || !strings.Contains(stderr.String(), "Sign-in failed: browser closed") {
+		t.Fatalf("attempts=%d stderr=%s", attempts, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "Base URL") || strings.Contains(stdout.String(), "API token") || strings.Contains(stdout.String(), "Image analysis") {
+		t.Fatalf("sign-in asked for API key details or image analysis:\n%s", stdout.String())
+	}
+	cfg := loadSetupConfig(t, path)
+	provider := cfg.Provider["chatgpt"]
+	if provider.Auth != config.AuthChatGPT || provider.Models["gpt-6-luna"].Protocol != "responses" {
+		t.Fatalf("provider = %+v", provider)
+	}
+	if cfg.ActiveModel != "chatgpt/gpt-6-luna" {
+		t.Fatalf("active model = %q", cfg.ActiveModel)
 	}
 }
 

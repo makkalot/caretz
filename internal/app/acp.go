@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/makkalot/caretz/internal/agent"
+	"github.com/makkalot/caretz/internal/chatgptauth"
 	"github.com/makkalot/caretz/internal/config"
 	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/internal/sandbox"
@@ -1132,7 +1133,7 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 
 	provider := s.rt.Provider
 	if runtimeSettings.Model != s.rt.Settings.Model || runtimeSettings.ActiveModelRef != s.rt.Settings.ActiveModelRef || runtimeSettings.ReasoningEffort != s.rt.Settings.ReasoningEffort || runtimeSettings.BaseURL != s.rt.Settings.BaseURL || runtimeSettings.APIKey != s.rt.Settings.APIKey || runtimeSettings.Protocol != s.rt.Settings.Protocol {
-		provider = llm.NewOpenAIProviderWithOptions(runtimeSettings.APIKey, runtimeSettings.BaseURL, runtimeSettings.Model, llm.OpenAIProviderOptions{
+		provider = chatgptauth.NewProvider(runtimeSettings.APIKey, runtimeSettings.BaseURL, runtimeSettings.Model, llm.OpenAIProviderOptions{
 			RequestTimeout:        runtimeSettings.LLMTimeout,
 			DisableRequestTimeout: runtimeSettings.LLMTimeout == 0,
 			MaxAttempts:           runtimeSettings.LLMMaxAttempts,
@@ -1409,7 +1410,7 @@ func (s *acpServer) switchACPAgentSessionModel(ctx context.Context, session *age
 	if err := confirmCloudModelSwitch(ctx, session, switched, &policy, s.rt.HomeConfigPath, session.WorkspaceDir(), ref, settings.BaseURL, warn); err != nil {
 		return slashcmd.ModelSwitchResult{}, err
 	}
-	provider := llm.NewOpenAIProviderWithOptions(settings.APIKey, settings.BaseURL, settings.Model, llm.OpenAIProviderOptions{
+	provider := chatgptauth.NewProvider(settings.APIKey, settings.BaseURL, settings.Model, llm.OpenAIProviderOptions{
 		RequestTimeout:        s.rt.Settings.LLMTimeout,
 		DisableRequestTimeout: s.rt.Settings.LLMTimeout == 0,
 		MaxAttempts:           s.rt.Settings.LLMMaxAttempts,
