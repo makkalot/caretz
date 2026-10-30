@@ -21,6 +21,7 @@
     - /docs/profiles
     - /docs/customization
     - /docs/tools
+    - /docs/loop-guard
 - group: Integrations
   items:
     - /docs/acp

@@ -16,6 +16,7 @@ import (
 	"github.com/makkalot/caretz/internal/clicmd"
 	"github.com/makkalot/caretz/internal/config"
 	"github.com/makkalot/caretz/internal/log"
+	"github.com/makkalot/caretz/internal/loopguard"
 	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/internal/sandbox"
 	"github.com/makkalot/caretz/internal/schedules"
@@ -51,6 +52,7 @@ type Runtime struct {
 	Incognito          bool
 	PlanMode           bool
 	DisableTasks       bool
+	LoopGuard          loopguard.Config
 	StartupResources   startupResources
 	Profile            config.Profile
 	Client             *caretz.Client
@@ -223,6 +225,11 @@ func (rt *Runtime) NewAdapterSession(adapterType, channelID string, opts Adapter
 		fileConfig: rt.FileConfig, policyFor: rt.FileConfig.PolicyForWorkspace, llmTimeout: settings.LLMTimeout,
 		llmMaxAttempts: settings.LLMMaxAttempts, logger: rt.Logger,
 	})
+	session.AgentSession().SetLoopGuard(rt.LoopGuard)
+	if err := session.AgentSession().ValidateLoopGuard(rt.Ctx); err != nil {
+		_ = session.Close()
+		return nil, fmt.Errorf("loop guard judge: %w", err)
+	}
 	// Adapters get the scheduler here so scheduled runs use the profile's
 	// schedules block; an integration installed later under the same name is
 	// ignored.
@@ -410,6 +417,11 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	sandboxSettings.ReadOnlyPaths = appendUniqueStrings(sandboxSettings.ReadOnlyPaths, agentsDirs...)
 	sandboxSettings.HiddenPaths = []string{homeConfigPath, projectConfigPath, config.CredentialsPath(homeConfigPath)}
 	disableTasks := resolveDisableTasks(fileConfig, baseFlags.TaskMode)
+	loopGuard, err := resolveLoopGuard(profile.LoopGuard, loopGuardFlags{Mode: baseFlags.LoopGuard, Model: baseFlags.LoopGuardModel, Reasoning: baseFlags.LoopGuardReasoning}, os.Getenv)
+	if err != nil {
+		output.Errorf(stderr, "%v", err)
+		return nil, 1
+	}
 
 	discoveredSkills, err := skills.DiscoverSkills(skillDirs, logger)
 	if err != nil {
@@ -651,6 +663,7 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 		Incognito:          baseFlags.Incognito,
 		PlanMode:           baseFlags.PlanMode,
 		DisableTasks:       disableTasks,
+		LoopGuard:          loopGuard,
 		StartupResources:   startupResources,
 		Profile:            profile,
 		Client:             client,

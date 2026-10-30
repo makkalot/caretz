@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCodingProfileSSHCredentials(t *testing.T) {
@@ -455,6 +456,39 @@ func TestLoadRejectsInvalidSchedules(t *testing.T) {
 		writeFile(t, homePath, `{"profiles":{"general":{"schedules":`+schedules+`}}}`)
 		if _, err := Load(homePath, ""); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("Load(%s) error = %v, want %q", schedules, err, want)
+		}
+	}
+}
+
+func TestLoadLoopGuardMergesFieldsAcrossLayers(t *testing.T) {
+	tmp := t.TempDir()
+	homePath := filepath.Join(tmp, "home.json")
+	projectPath := filepath.Join(tmp, "project.json")
+	writeFile(t, homePath, `{"profiles":{"general":{"loopGuard":{"mode":"shadow","judgeTimeout":"20s","judge":{"model":"local/big"}}}}}`)
+	writeFile(t, projectPath, `{"profiles":{"general":{"loopGuard":{"mode":"active","repeatThreshold":4}}}}`)
+
+	cfg, err := Load(homePath, projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := cfg.Operational().LoopGuard
+	if g.Mode != "active" || g.RepeatThreshold == nil || *g.RepeatThreshold != 4 || g.JudgeTimeout.Duration != 20*time.Second || g.Judge == nil || g.Judge.Model != "local/big" {
+		t.Fatalf("LoopGuard = %#v", g)
+	}
+}
+
+func TestLoadRejectsInvalidLoopGuard(t *testing.T) {
+	tests := map[string]string{
+		`{"mode":"on"}`:                  "loopGuard.mode",
+		`{"repeatThreshold":1}`:          "loopGuard.repeatThreshold must be >= 2",
+		`{"judgeTimeout":"0s"}`:          "loopGuard.judgeTimeout must be positive",
+		`{"judge":{"reasoning":"high"}}`: "loopGuard.judge.reasoning requires judge.model",
+	}
+	for guard, want := range tests {
+		homePath := filepath.Join(t.TempDir(), "home.json")
+		writeFile(t, homePath, `{"profiles":{"general":{"loopGuard":`+guard+`}}}`)
+		if _, err := Load(homePath, ""); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Load(%s) error = %v, want %q", guard, err, want)
 		}
 	}
 }
