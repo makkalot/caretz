@@ -21,6 +21,7 @@ import (
 
 	caretz "github.com/makkalot/caretz"
 	"github.com/makkalot/caretz/internal/agent"
+	"github.com/makkalot/caretz/internal/chatgptauth"
 	"github.com/makkalot/caretz/internal/clicmd"
 	"github.com/makkalot/caretz/internal/config"
 	"github.com/makkalot/caretz/internal/log"
@@ -153,7 +154,7 @@ func probeProviders(ctx context.Context, cfg config.Config, timeout time.Duratio
 				return
 			}
 			apiKey := cmp.Or(cfg.ProviderAPIKey(probe.Key), config.NoAPIKey)
-			probe.Models, probe.Err = llm.ListOpenAIModels(ctx, apiKey, baseURL, llm.OpenAIProviderOptions{
+			probe.Models, probe.Err = chatgptauth.ListModels(ctx, apiKey, baseURL, llm.OpenAIProviderOptions{
 				RequestTimeout: timeout,
 				MaxAttempts:    1,
 			})
@@ -289,7 +290,7 @@ func (r subagentModelResolver) ResolveSubagentModel(ctx context.Context, request
 			r.logger.Info("subagent %s %s", cmp.Or(request.Name, "-"), modelSummary(settings, ""))
 		}
 	}
-	provider := llm.NewOpenAIProviderWithOptions(settings.APIKey, settings.BaseURL, settings.Model, llm.OpenAIProviderOptions{
+	provider := chatgptauth.NewProvider(settings.APIKey, settings.BaseURL, settings.Model, llm.OpenAIProviderOptions{
 		RequestTimeout:        r.llmTimeout,
 		DisableRequestTimeout: r.llmTimeout == 0,
 		MaxAttempts:           r.llmMaxAttempts,
@@ -372,6 +373,7 @@ type baseFlagValues struct {
 	APIKey                 string         `flag:"api-key" help:"API key (overrides config and OPENAI_API_KEY env var)" group:"Model and context"`
 	BaseURL                string         `flag:"base-url" help:"API base URL (overrides config and OPENAI_API_BASE_URL env var)" group:"Model and context"`
 	Model                  string         `flag:"model" help:"Model name (overrides config and OPENAI_API_MODEL env var)" group:"Model and context"`
+	AllowModels            []string       `flag:"allow-model" help:"Allow a configured model, such as chatgpt/gpt-6.1-sol or chatgpt/*, in this workspace for this run only, on top of its model rule; nothing is saved; repeatable" group:"Model and context"`
 	ReasoningEffort        string         `flag:"reasoning" help:"Reasoning effort sent as reasoning_effort for OpenAI-compatible providers" group:"Model and context"`
 	DisableModelDiscovery  bool           `flag:"no-model-discovery" help:"Ignore models cached by caretz setup and caretz models --refresh; use configured models or explicit model settings" group:"Model and context"`
 	ContextWindow          int            `flag:"context-window" help:"LLM context window size in tokens (overrides config and CARETZ_CONTEXT_WINDOW env var)" group:"Model and context"`

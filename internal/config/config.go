@@ -152,7 +152,11 @@ type Sandbox struct {
 }
 
 type Provider struct {
-	Local   *bool            `json:"local,omitempty"`
+	Local *bool `json:"local,omitempty"`
+	// Auth selects how caretz authenticates to the provider. Empty means an
+	// API key from credentials.json; AuthChatGPT signs in with a ChatGPT
+	// account and spends its plan usage.
+	Auth    string           `json:"auth,omitempty"`
 	Name    string           `json:"name"`
 	Options ProviderOptions  `json:"options"`
 	Models  map[string]Model `json:"models"`
@@ -595,6 +599,9 @@ func (c Config) ResolveExplicitModelRef(modelRef string) (Resolved, bool, error)
 	if provider.Options.BaseURL != nil {
 		resolved.BaseURL = *provider.Options.BaseURL
 	}
+	if provider.Auth == AuthChatGPT {
+		resolved.BaseURL, resolved.Protocol = ChatGPTBaseURL, "responses"
+	}
 	return resolved, true, nil
 }
 
@@ -681,6 +688,10 @@ func (c Config) resolveProviderModel(providerKey, modelKey, displayRef string) (
 	}
 	if provider.Options.BaseURL != nil {
 		out.BaseURL = *provider.Options.BaseURL
+	}
+	if provider.Auth == AuthChatGPT {
+		// Plan usage is served only by the Responses API on OpenAI's host.
+		out.BaseURL, out.Protocol = ChatGPTBaseURL, "responses"
 	}
 	if model.Limit.Context != nil {
 		out.ContextWindow = *model.Limit.Context
@@ -973,6 +984,9 @@ func mergeProvider(base, override Provider) Provider {
 	if override.Local != nil {
 		base.Local = override.Local
 	}
+	if override.Auth != "" {
+		base.Auth = override.Auth
+	}
 	if override.Options.APIKey != nil {
 		base.Options.APIKey = override.Options.APIKey
 	}
@@ -1057,6 +1071,9 @@ func validate(cfg Config) error {
 	for providerKey, provider := range cfg.Provider {
 		if provider.Local != nil && *provider.Local && (provider.Options.BaseURL == nil || normalizeSetupBaseURL(*provider.Options.BaseURL) == "") {
 			return fmt.Errorf("config provider %q local: true requires baseURL", providerKey)
+		}
+		if err := validateProviderAuth(providerKey, provider); err != nil {
+			return err
 		}
 		for modelKey, model := range provider.Models {
 			if protocol := strings.TrimSpace(model.Protocol); protocol != "" && protocol != "chat-completions" && protocol != "responses" {

@@ -85,6 +85,17 @@ Allowed openai/gpt-5.5 in /Users/me/src/medoit; saved model rule to /Users/me/.c
 It saves the same rule as **Always allow here** and works in prompt mode and
 ACP too. Every refusal ends with the `/allow-model` command to run.
 
+To try a model in one run without saving anything, pass `--allow-model`. It
+takes the same selectors as a rule and can be repeated:
+
+```sh
+caretz --allow-model chatgpt/gpt-6.1-sol --model chatgpt/gpt-6.1-sol
+```
+
+The model is allowed in this directory on top of its rule, for subagents and
+goal roles too, and `/modelrules` marks the rule `(this run)`. In a directory
+no rule covers, it also answers the cloud prompt for the models you named.
+
 If you chose local models at the cloud prompt, the rest of the run follows the
 same enforcement as a rule: switching to a hosted model asks to override it,
 and hosted subagent models are refused. If no local model is configured, the
