@@ -182,7 +182,8 @@ The docs are split into small pages; browse them at
   [Profiles](docs/profiles/_index.md) ·
   [Instructions, skills, subagents](docs/customization/_index.md) ·
   [Tools and web search](docs/tools/_index.md) ·
-  [Add your own tools](docs/tools/custom-cli.md)
+  [Add your own tools](docs/tools/custom-cli.md) ·
+  [Loop guard](docs/loop-guard.md)
 - **Integrations:** [Zed and ACP editors](docs/acp.md) · [Herdr](docs/herdr.md)
 - **Build on caretz:** [Embed in Go](docs/embedding/_index.md) ·
   [Build on the CLI](docs/extending-cli/_index.md) ·

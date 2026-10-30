@@ -48,6 +48,9 @@ type AgentLoop struct {
 	taskState                  *tasks.State
 	taskMutationsSinceSnapshot int
 	disableTasks               bool
+
+	loopGuardMu sync.RWMutex
+	loopGuard   *loopGuardHooks
 }
 
 type AgentLoopParams struct {

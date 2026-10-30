@@ -15,6 +15,7 @@ import (
 
 	"github.com/makkalot/caretz/internal/clicmd"
 	"github.com/makkalot/caretz/internal/config"
+	"github.com/makkalot/caretz/internal/loopguard"
 	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/lib/llm"
 )
@@ -282,6 +283,56 @@ func TestResolveDisableTasksPrecedence(t *testing.T) {
 	}
 	if !resolveDisableTasks(config.Config{}, taskFlagDisable) {
 		t.Fatal("resolveDisableTasks(--no-tasks) = false, want disabled")
+	}
+}
+
+func TestResolveLoopGuardPrecedence(t *testing.T) {
+	threshold := 4
+	profile := config.LoopGuard{Mode: "shadow", RepeatThreshold: &threshold, Judge: &config.GoalRole{Model: " local/big ", Reasoning: "high"}}
+	env := func(value string) func(string) string {
+		return func(name string) string {
+			if name == "CARETZ_LOOP_GUARD" {
+				return value
+			}
+			return ""
+		}
+	}
+
+	cfg, err := resolveLoopGuard(profile, loopGuardFlags{}, env(""))
+	if err != nil || cfg.Mode != loopguard.ModeShadow || cfg.RepeatThreshold != 4 || cfg.JudgeModel != "local/big" || cfg.JudgeReasoning != "high" {
+		t.Fatalf("resolveLoopGuard(config) = %+v, %v", cfg, err)
+	}
+	if cfg, _ := resolveLoopGuard(profile, loopGuardFlags{}, env("active")); cfg.Mode != loopguard.ModeActive {
+		t.Fatalf("env mode = %q, want active", cfg.Mode)
+	}
+	if cfg, _ := resolveLoopGuard(profile, loopGuardFlags{Mode: "off"}, env("active")); cfg.Mode != loopguard.ModeOff {
+		t.Fatalf("flag mode = %q, want off", cfg.Mode)
+	}
+	if _, err := resolveLoopGuard(profile, loopGuardFlags{Mode: "loud"}, env("")); err == nil {
+		t.Fatal("resolveLoopGuard(--loop-guard loud) error = nil")
+	}
+}
+
+func TestResolveLoopGuardJudgeFlags(t *testing.T) {
+	profile := config.LoopGuard{Judge: &config.GoalRole{Model: "local/big", Reasoning: "high"}}
+	noEnv := func(string) string { return "" }
+
+	// A flag model drops the reasoning chosen for the configured model.
+	cfg, err := resolveLoopGuard(profile, loopGuardFlags{Model: "cloud/judge"}, noEnv)
+	if err != nil || cfg.JudgeModel != "cloud/judge" || cfg.JudgeReasoning != "" {
+		t.Fatalf("--loop-guard-model = %+v, %v", cfg, err)
+	}
+	cfg, err = resolveLoopGuard(profile, loopGuardFlags{Model: "cloud/judge", Reasoning: "low"}, noEnv)
+	if err != nil || cfg.JudgeModel != "cloud/judge" || cfg.JudgeReasoning != "low" {
+		t.Fatalf("--loop-guard-model --loop-guard-reasoning = %+v, %v", cfg, err)
+	}
+	// Reasoning alone applies to the configured model.
+	cfg, err = resolveLoopGuard(profile, loopGuardFlags{Reasoning: "medium"}, noEnv)
+	if err != nil || cfg.JudgeModel != "local/big" || cfg.JudgeReasoning != "medium" {
+		t.Fatalf("--loop-guard-reasoning = %+v, %v", cfg, err)
+	}
+	if _, err := resolveLoopGuard(config.LoopGuard{}, loopGuardFlags{Reasoning: "high"}, noEnv); err == nil || !strings.Contains(err.Error(), "--loop-guard-model") {
+		t.Fatalf("reasoning without any model error = %v", err)
 	}
 }
 

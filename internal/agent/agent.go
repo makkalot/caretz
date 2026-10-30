@@ -714,6 +714,7 @@ func (a *AgentSession) NewSiblingSession(channelID string) (*AgentSession, error
 	sibling.inheritAgents(a)
 	sibling.SetAllowedAgents(a.AllowedAgents())
 	sibling.SetSubagentModelResolver(a.subagentModelResolver)
+	sibling.SetLoopGuard(a.LoopGuard())
 	a.integrationMu.Lock()
 	factories := append([]sessiontools.Factory(nil), a.integrationFactories...)
 	a.integrationMu.Unlock()
@@ -766,6 +767,7 @@ func (a *AgentSession) NewChildSessionWithOptions(opts ChildSessionOptions) (*Ag
 	child.inheritAgents(a)
 	child.SetAllowedAgents(a.AllowedAgents())
 	child.SetSubagentModelResolver(a.subagentModelResolver)
+	child.SetLoopGuard(a.LoopGuard())
 	return child, nil
 }
 
@@ -802,6 +804,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 	}
 	consecutiveEmptyResponses := 0
 	contextSizeRecoveries := 0
+	loopGuard := a.newTurnLoopGuard(newMessage.Content, summary)
 	for iteration := 1; ; iteration++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -1022,10 +1025,13 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			a.logger.Warn("Failed to append agent message to context store: %v", err)
 		}
 
-		for _, tc := range result.ToolCalls {
+		for i, tc := range result.ToolCalls {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			// The loop guard judges once per batch, on its last result, so a
+			// redirect lands where the model reads next.
+			lastInBatch := i == len(result.ToolCalls)-1
 			a.logger.Debug("Iteration %d: tool call %s (id: %s) arguments: %s", iteration, tc.Name, tc.ID, tc.Arguments)
 			toolStart := time.Now()
 
@@ -1092,6 +1098,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 					Content:    contentErr,
 					ToolCallID: tc.ID,
 				}
+				toolCallMessage.Content += loopGuard.afterToolResult(ctx, a, tc, contentErr, true, lastInBatch)
 
 				messages = append(messages, toolCallMessage)
 				if !summary {
@@ -1108,6 +1115,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			}
 
 			a.logger.Info("%s tool %s ok %s %dB %s", modelTag, tc.Name, formatDuration(time.Since(toolStart)), len(toolCallRes.Content), toolArgSummary(tc.Arguments))
+			toolCallRes.Content += loopGuard.afterToolResult(ctx, a, tc, toolCallRes.Content, false, lastInBatch)
 			messages = append(messages, toolCallRes)
 			if !summary {
 				a.setActiveMessages(messages)

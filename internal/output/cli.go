@@ -168,6 +168,9 @@ func (o *CLIOutput) RegisterHandlers(agentSession *agent.AgentSession) error {
 	if err := agentSession.OnAuditEvent(eventing.StatusUpdated, o.HandleStatusUpdated); err != nil {
 		return err
 	}
+	if err := agentSession.OnAuditEvent(agent.LoopGuardJudgedEvent, o.HandleLoopGuardJudged); err != nil {
+		return err
+	}
 
 	return nil
 }
