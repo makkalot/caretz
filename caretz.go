@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/makkalot/caretz/internal/agent"
+	"github.com/makkalot/caretz/internal/chatgptauth"
 	"github.com/makkalot/caretz/internal/log"
 	"github.com/makkalot/caretz/internal/sandbox"
 	"github.com/makkalot/caretz/internal/skills"
@@ -203,7 +204,7 @@ func NewClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 	model := defaultModelOptions(opts.Model)
 	provider := opts.Provider
 	if provider == nil {
-		provider = llm.NewOpenAIProviderWithOptions(model.APIKey, model.BaseURL, model.Model, llm.OpenAIProviderOptions{
+		provider = chatgptauth.NewProvider(model.APIKey, model.BaseURL, model.Model, llm.OpenAIProviderOptions{
 			RequestTimeout:        model.Timeout,
 			DisableRequestTimeout: model.Timeout == 0,
 			MaxAttempts:           model.MaxAttempts,
@@ -349,7 +350,7 @@ func (c *Client) NewSession(id string, opts SessionOptions) (*Session, error) {
 	provider := c.provider
 	if opts.Model != nil {
 		model = defaultModelOptions(*opts.Model)
-		provider = llm.NewOpenAIProviderWithOptions(model.APIKey, model.BaseURL, model.Model, llm.OpenAIProviderOptions{
+		provider = chatgptauth.NewProvider(model.APIKey, model.BaseURL, model.Model, llm.OpenAIProviderOptions{
 			RequestTimeout:        model.Timeout,
 			DisableRequestTimeout: model.Timeout == 0,
 			MaxAttempts:           model.MaxAttempts,

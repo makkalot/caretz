@@ -46,7 +46,7 @@ func newCaretzCLICommand(env cliEnvironment) *clicmd.Command {
 		},
 	}
 	setup := &clicmd.Command{
-		Use: "caretz setup", Short: "Configure a local or hosted model provider", Args: clicmd.NoArgs,
+		Use: "caretz setup", Short: "Configure a local or hosted model provider, or sign in with a ChatGPT plan", Args: clicmd.NoArgs,
 		Run: func(ctx context.Context, _ *clicmd.Result) int {
 			return runSetupCommand(ctx, nil, env.stdin, env.stdout, env.stderr)
 		},

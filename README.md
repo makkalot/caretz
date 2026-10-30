@@ -178,6 +178,7 @@ The docs are split into small pages; browse them at
   [Network](docs/sandboxing/network.md) · [Files](docs/sandboxing/files.md) ·
   [Run one command outside](docs/sandboxing/escalation.md)
 - **Configure:** [Configuration](docs/config/_index.md) ·
+  [Use your ChatGPT plan](docs/config/chatgpt.md) ·
   [Profiles](docs/profiles/_index.md) ·
   [Instructions, skills, subagents](docs/customization/_index.md) ·
   [Tools and web search](docs/tools/_index.md) ·
