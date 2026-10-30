@@ -35,3 +35,37 @@ func TestAskingRunsACommand(t *testing.T) {
 		File("greeting.txt", story.Equals("hello\n")).
 		Saw(story.Contains("hello"))
 }
+
+func TestAskingRunsMyOwnCommand(t *testing.T) {
+	s := asking.Scenario(t, "I can run a command myself without asking the assistant")
+	s.Describe("A prompt that starts with ! runs in the sandbox as a shell command.")
+	s.When().Ask("!echo hi from my shell")
+	s.Then().
+		Succeeds().
+		Stdout(story.Contains("hi from my shell")).
+		RequestCount(0)
+}
+
+func TestAskingTaskFromFile(t *testing.T) {
+	s := asking.Scenario(t, "I can give caretz a task written in a file")
+	s.Given().
+		File("task.md", "Summarize the open TODOs in this project.").
+		Model(story.Replies("There are no open TODOs"))
+	s.When().Run("--prompt-file", "task.md")
+	s.Then().
+		Succeeds().
+		Stdout(story.Contains("There are no open TODOs")).
+		Prompt(story.Contains("Summarize the open TODOs in this project."))
+}
+
+func TestAskingAboutAnotherProject(t *testing.T) {
+	s := asking.Scenario(t, "I can point caretz at another project without changing directory")
+	s.Given().
+		File("../other-project/README.md", "The other project").
+		Model(story.RunsCommand("cat README.md")).
+		Model(story.Replies("This is the other project"))
+	s.When().Ask("what is this project?", "--workspace", "../other-project")
+	s.Then().
+		Succeeds().
+		Saw(story.Contains("The other project"))
+}

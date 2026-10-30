@@ -59,6 +59,52 @@ Feature: Working safely
     And what the assistant saw from the command contains "Use tabs."
     And the file "../docs/guide.md" is "Use tabs."
 
+  # Test: TestSandboxPassTokenByName (e2e/sandbox_test.go)
+  Scenario: I can pass a token from my shell to caretz's commands
+    Given my shell has DEPLOY_TOKEN set to "s3cret"
+    And the assistant runs:
+      """
+      echo "token=$DEPLOY_TOKEN"
+      """
+    And the assistant replies "The deploy token is available"
+    When I ask caretz "check the deploy token" with --sandbox-env DEPLOY_TOKEN
+    Then caretz finishes successfully
+    And what the assistant saw from the command contains "token=s3cret"
+
+  # Test: TestSandboxPassSettingsFromFile (e2e/sandbox_test.go)
+  Scenario: I can pass several settings from an env file
+    Given my shell has DEPLOY_TOKEN set to "s3cret"
+    And a file ".caretz/sandbox.env" containing:
+      """
+      # copied from my shell
+      DEPLOY_TOKEN
+      CI=true
+      """
+    And the assistant runs:
+      """
+      echo "token=$DEPLOY_TOKEN ci=$CI"
+      """
+    And the assistant replies "Both settings are available"
+    When I ask caretz "check the settings" with --sandbox-env-file .caretz/sandbox.env
+    Then caretz finishes successfully
+    And what the assistant saw from the command contains "token=s3cret ci=true"
+
+  # Test: TestSandboxBackgroundJobKeepsRunning (e2e/sandbox_test.go)
+  Scenario: a job started in the background keeps running for my next command
+    Like a dev server that the assistant starts and then exercises.
+    Given the assistant starts in the background:
+      """
+      sleep 1; echo ready > status.txt
+      """
+    And the assistant runs:
+      """
+      sleep 3; cat status.txt
+      """
+    And the assistant replies "The background job finished"
+    When I ask caretz "start the job and check on it"
+    Then caretz finishes successfully
+    And what the assistant saw from the command contains "ready"
+
   # Test: TestSandboxPlanModeChangesNothing (e2e/sandbox_test.go)
   Scenario: in plan mode caretz looks but does not change anything
     Given a file "notes.txt" containing:

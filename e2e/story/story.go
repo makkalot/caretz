@@ -88,36 +88,92 @@ func (s *Story) Then() *Then {
 	return &Then{s}
 }
 
-// Part is one piece of a scripted assistant reply: text or a tool call.
+// Part is one piece of a scripted assistant reply: text or a tool call. Each
+// part carries the sentence the .feature file shows for it, so tool names and
+// JSON arguments stay out of the user story.
 type Part struct {
-	text    string
-	call    *fakellm.ToolCall
-	command string // set for RunsCommand, shown instead of the JSON arguments
+	text string
+	call *fakellm.ToolCall
+
+	speaker string  // "the assistant" unless As names an agent
+	verb    string  // what the speaker does: "runs:", "reads \"x\""
+	doc     *string // doc string shown under the sentence
+	source  string  // what a tool result came from, for Then().Saw
 }
 
 // Replies is reply text.
-func Replies(text string) Part { return Part{text: text} }
+func Replies(text string) Part {
+	if strings.Contains(text, "\n") {
+		return Part{text: text, verb: "replies:", doc: &text}
+	}
+	return Part{text: text, verb: fmt.Sprintf("replies %q", text)}
+}
+
+// As attributes a reply to a subagent, for scripting the turns a child agent
+// takes after Delegates: `the "reviewer" agent replies "..."`.
+func (p Part) As(agent string) Part {
+	p.speaker = fmt.Sprintf("the %q agent", agent)
+	return p
+}
 
 // RunsCommand is a shell command the assistant runs with the Bash tool.
 func RunsCommand(command string) Part {
-	args, err := json.Marshal(map[string]string{"command": command})
-	if err != nil {
-		panic(err)
-	}
-	return Part{call: &fakellm.ToolCall{Name: "Bash", Arguments: string(args)}, command: command}
+	return toolPart("Bash", map[string]any{"command": command}, "runs:", &command, "the command")
+}
+
+// RunsInBackground is a shell command the assistant starts in the background,
+// so it keeps running while later commands execute.
+func RunsInBackground(command string) Part {
+	return toolPart("Bash", map[string]any{"command": command, "background": true}, "starts in the background:", &command, "the background command")
+}
+
+// Reads is the assistant reading a file with the Read tool.
+func Reads(path string) Part {
+	return toolPart("Read", map[string]any{"file_path": path}, fmt.Sprintf("reads %q", path), nil, fmt.Sprintf("reading %q", path))
+}
+
+// Writes is the assistant creating or replacing a file with the Write tool.
+func Writes(path, content string) Part {
+	return toolPart("Write", map[string]any{"file_path": path, "content": content}, fmt.Sprintf("writes %q:", path), &content, fmt.Sprintf("writing %q", path))
+}
+
+// Edits is the assistant replacing old with new in a file with the Edit tool.
+func Edits(path, old, new string) Part {
+	args := map[string]any{"file_path": path, "edits": []map[string]string{{"old_text": old, "new_text": new}}}
+	return toolPart("Edit", args, fmt.Sprintf("changes %q to %q in %q", old, new, path), nil, fmt.Sprintf("editing %q", path))
+}
+
+// Delegates is the assistant handing task to a subagent with CallSubagent.
+// Script the child's turns next, with Replies(...).As(agent).
+func Delegates(agent, task string) Part {
+	args := map[string]any{"agent": agent, "task": task}
+	return toolPart("CallSubagent", args, fmt.Sprintf("hands %q to the %q agent", task, agent), nil, fmt.Sprintf("the %q agent", agent))
 }
 
 // Calls is a request for caretz to run any tool with JSON arguments. Prefer a
 // task-shaped part such as RunsCommand when one fits; it reads better.
 func Calls(tool, args string) Part {
-	return Part{call: &fakellm.ToolCall{Name: tool, Arguments: args}}
+	return Part{
+		call:   &fakellm.ToolCall{Name: tool, Arguments: args},
+		verb:   fmt.Sprintf("uses the %q tool with:", tool),
+		doc:    &args,
+		source: fmt.Sprintf("the %q tool", tool),
+	}
+}
+
+func toolPart(tool string, args map[string]any, verb string, doc *string, source string) Part {
+	data, err := json.Marshal(args)
+	if err != nil {
+		panic(err)
+	}
+	return Part{call: &fakellm.ToolCall{Name: tool, Arguments: string(data)}, verb: verb, doc: doc, source: source}
 }
 
 // ID sets the tool call's ID for Then().Request(n).ToolResult. Story assigns
 // one otherwise; it never appears in the .feature file.
 func (p Part) ID(id string) Part {
 	if p.call == nil {
-		panic("story: ID on a text part; use it on RunsCommand or Calls")
+		panic("story: ID on a text part; use it on a tool part")
 	}
 	call := *p.call
 	call.ID = id
@@ -137,34 +193,25 @@ func (g *Given) Model(parts ...Part) *Given {
 	}
 	var turn fakellm.Turn
 	for i, p := range parts {
-		subject := "the assistant"
+		subject := p.speaker
+		if subject == "" {
+			subject = "the assistant"
+		}
 		if i > 0 {
-			subject = "in the same reply the assistant"
+			subject = "in the same reply " + subject
 		}
-		switch {
-		case p.call != nil:
-			call := *p.call
-			call.Arguments = g.s.expand(call.Arguments)
-			if call.ID == "" {
-				call.ID = fmt.Sprintf("call_%d", len(g.s.calls)+1)
-			}
-			if p.command != "" {
-				g.s.record(phaseGiven, subject+" runs:", &p.command)
-				g.s.calls = append(g.s.calls, scriptedCall{id: call.ID, source: "the command"})
-			} else {
-				args := call.Arguments
-				g.s.record(phaseGiven, fmt.Sprintf("%s uses the %q tool with:", subject, call.Name), &args)
-				g.s.calls = append(g.s.calls, scriptedCall{id: call.ID, source: fmt.Sprintf("the %q tool", call.Name)})
-			}
-			turn.ToolCalls = append(turn.ToolCalls, call)
-		case strings.Contains(p.text, "\n"):
-			text := p.text
-			g.s.record(phaseGiven, subject+" replies:", &text)
+		g.s.record(phaseGiven, subject+" "+p.verb, p.doc)
+		if p.call == nil {
 			turn.Text += p.text
-		default:
-			g.s.record(phaseGiven, fmt.Sprintf("%s replies %q", subject, p.text), nil)
-			turn.Text += p.text
+			continue
 		}
+		call := *p.call
+		call.Arguments = g.s.expand(call.Arguments)
+		if call.ID == "" {
+			call.ID = fmt.Sprintf("call_%d", len(g.s.calls)+1)
+		}
+		g.s.calls = append(g.s.calls, scriptedCall{id: call.ID, source: p.source})
+		turn.ToolCalls = append(turn.ToolCalls, call)
 	}
 	g.s.LLM.Push(turn)
 	return g
@@ -267,7 +314,7 @@ func (s *Story) expandAll(args []string) []string {
 
 // Env sets an environment variable for every later run.
 func (g *Given) Env(key, value string) *Given {
-	g.s.record(phaseGiven, fmt.Sprintf("the environment variable %s is %q", key, value), nil)
+	g.s.record(phaseGiven, fmt.Sprintf("my shell has %s set to %q", key, value), nil)
 	g.s.Env.ExtraEnv = append(g.s.Env.ExtraEnv, key+"="+value)
 	return g
 }
@@ -295,6 +342,47 @@ func (w *When) Ask(prompt string, flags ...string) *When {
 	w.s.record(phaseWhen, text, nil)
 	w.s.Res = w.s.Env.Run(append([]string{"-p", prompt}, w.s.expandAll(flags)...)...)
 	return w
+}
+
+// Continue resumes the session the previous run saved, as `caretz -s <id>
+// -p prompt` does, with any extra flags after it.
+func (w *When) Continue(prompt string, flags ...string) *When {
+	w.s.t.Helper()
+	text := fmt.Sprintf("I continue that session with %q", prompt)
+	if len(flags) > 0 {
+		text += " with " + shellJoin(flags)
+	}
+	w.s.record(phaseWhen, text, nil)
+	args := append([]string{"-s", w.s.lastSession(), "-p", prompt}, w.s.expandAll(flags)...)
+	w.s.Res = w.s.Env.Run(args...)
+	return w
+}
+
+// lastSession returns the ID of the most recently written prompt-mode
+// session. Caretz does not print it in prompt mode, so it is read from the
+// config root's session store.
+func (s *Story) lastSession() string {
+	s.t.Helper()
+	dir := filepath.Join(s.Env.ConfigRoot, "sessions", "cli")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		s.t.Fatalf("story: no saved session to continue: %v", err)
+	}
+	var latest string
+	var latestTime int64
+	for _, e := range entries {
+		info, err := e.Info()
+		if err != nil || !e.IsDir() {
+			continue
+		}
+		if mod := info.ModTime().UnixNano(); latest == "" || mod > latestTime {
+			latest, latestTime = e.Name(), mod
+		}
+	}
+	if latest == "" {
+		s.t.Fatalf("story: no saved session in %s", dir)
+	}
+	return latest
 }
 
 // Run runs caretz with args after the harness's endpoint, workspace, and
@@ -432,6 +520,59 @@ func (th *Then) site(host string) *website {
 func (th *Then) Prompt(m Matcher) *Then {
 	th.s.t.Helper()
 	th.assert("the prompt the assistant received", th.s.LLM.Request(0).LastUserMessage().Content, m)
+	return th
+}
+
+// Instructions checks the system prompt caretz sent with its first request:
+// project rules, skills, and the base prompt.
+func (th *Then) Instructions(m Matcher) *Then {
+	th.s.t.Helper()
+	th.assert("the instructions the assistant received", th.s.LLM.Request(0).SystemPrompt(), m)
+	return th
+}
+
+// Conversation checks every message caretz sent in its last request, for
+// stories about what the assistant remembers.
+func (th *Then) Conversation(m Matcher) *Then {
+	th.s.t.Helper()
+	reqs := th.s.LLM.Requests()
+	if len(reqs) == 0 {
+		th.s.t.Fatal("caretz sent no requests to the model")
+	}
+	var b strings.Builder
+	for _, msg := range reqs[len(reqs)-1].Messages {
+		if msg.Role != "system" {
+			b.WriteString(msg.Content + "\n")
+		}
+	}
+	th.assert("the conversation the assistant received", b.String(), m)
+	return th
+}
+
+// RequestCount fails unless caretz sent exactly n requests to the model.
+func (th *Then) RequestCount(n int) *Then {
+	th.s.t.Helper()
+	text := fmt.Sprintf("caretz contacted the assistant %d times", n)
+	switch n {
+	case 0:
+		text = "caretz did not contact the assistant"
+	case 1:
+		text = "caretz contacted the assistant once"
+	}
+	th.s.record(phaseThen, text, nil)
+	if got := len(th.s.LLM.Requests()); got != n {
+		th.s.t.Fatalf("model received %d request(s), want %d", got, n)
+	}
+	return th
+}
+
+// CannotUse fails if caretz offered tool to the assistant.
+func (th *Then) CannotUse(tool string) *Then {
+	th.s.t.Helper()
+	th.s.record(phaseThen, fmt.Sprintf("the assistant cannot use the %q tool", tool), nil)
+	if th.s.LLM.Request(0).HasTool(tool) {
+		th.s.t.Fatalf("caretz offered the %s tool", tool)
+	}
 	return th
 }
 

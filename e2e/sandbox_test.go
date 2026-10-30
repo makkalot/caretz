@@ -62,6 +62,44 @@ func TestSandboxReadOnlyFolder(t *testing.T) {
 		File("../docs/guide.md", story.Equals("Use tabs."))
 }
 
+func TestSandboxPassTokenByName(t *testing.T) {
+	s := sandbox.Scenario(t, "I can pass a token from my shell to caretz's commands")
+	s.Given().
+		Env("DEPLOY_TOKEN", "s3cret").
+		Model(story.RunsCommand(`echo "token=$DEPLOY_TOKEN"`)).
+		Model(story.Replies("The deploy token is available"))
+	s.When().Ask("check the deploy token", "--sandbox-env", "DEPLOY_TOKEN")
+	s.Then().
+		Succeeds().
+		Saw(story.Contains("token=s3cret"))
+}
+
+func TestSandboxPassSettingsFromFile(t *testing.T) {
+	s := sandbox.Scenario(t, "I can pass several settings from an env file")
+	s.Given().
+		Env("DEPLOY_TOKEN", "s3cret").
+		File(".caretz/sandbox.env", "# copied from my shell\nDEPLOY_TOKEN\nCI=true\n").
+		Model(story.RunsCommand(`echo "token=$DEPLOY_TOKEN ci=$CI"`)).
+		Model(story.Replies("Both settings are available"))
+	s.When().Ask("check the settings", "--sandbox-env-file", ".caretz/sandbox.env")
+	s.Then().
+		Succeeds().
+		Saw(story.Contains("token=s3cret ci=true"))
+}
+
+func TestSandboxBackgroundJobKeepsRunning(t *testing.T) {
+	s := sandbox.Scenario(t, "a job started in the background keeps running for my next command")
+	s.Describe("Like a dev server that the assistant starts and then exercises.")
+	s.Given().
+		Model(story.RunsInBackground("sleep 1; echo ready > status.txt")).
+		Model(story.RunsCommand("sleep 3; cat status.txt")).
+		Model(story.Replies("The background job finished"))
+	s.When().Ask("start the job and check on it")
+	s.Then().
+		Succeeds().
+		Saw(story.Contains("ready"))
+}
+
 func TestSandboxPlanModeChangesNothing(t *testing.T) {
 	s := sandbox.Scenario(t, "in plan mode caretz looks but does not change anything")
 	s.Given().

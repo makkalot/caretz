@@ -129,7 +129,8 @@ func (f *Feature) render() (string, string) {
 			b.WriteString("    " + keyword + " " + step.text + "\n")
 			if step.doc != nil {
 				b.WriteString(`      """` + "\n")
-				writeIndented(&b, "      ", *step.doc)
+				// A file's final newline would show as a stray blank line.
+				writeIndented(&b, "      ", strings.TrimSuffix(*step.doc, "\n"))
 				b.WriteString(`      """` + "\n")
 			}
 		}
@@ -157,6 +158,8 @@ func featureFileName(name string) string {
 			return r
 		case r >= 'A' && r <= 'Z':
 			return r + ('a' - 'A')
+		case r == '\'':
+			return -1 // "caretz's tools" -> "caretzs_tools"
 		default:
 			return '_'
 		}

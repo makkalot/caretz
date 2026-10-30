@@ -91,7 +91,7 @@ func readCloudConsent(terminal *ansi.Terminal, q cloudConsentQuestion, expiresAt
 			{label: "Always allow here", key: 'a'},
 			{label: "Keep current", key: 'n'},
 		}
-		choice, err := readButtonChoice(terminal, choices, 2, expiresAt, "No answer; keeping the current model.")
+		choice, err := readButtonChoice(terminal, choices, 2, expiresAt, "No answer; keeping the current model.", nil)
 		if err != nil {
 			return "", false, err
 		}
@@ -120,7 +120,7 @@ func readCloudConsent(terminal *ansi.Terminal, q cloudConsentQuestion, expiresAt
 		{label: "Always local here", key: 'l'},
 	}
 	answers := []cloudAnswer{cloudAllowOnce, cloudAllowAlways, cloudLocalOnce, cloudLocalAlways}
-	choice, err := readButtonChoice(terminal, choices, 2, expiresAt, "No answer; keeping the current model.")
+	choice, err := readButtonChoice(terminal, choices, 2, expiresAt, "No answer; keeping the current model.", nil)
 	if err != nil {
 		return "", false, err
 	}
