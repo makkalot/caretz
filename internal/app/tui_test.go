@@ -198,7 +198,7 @@ func TestStartTUIExitCommand(t *testing.T) {
 		Skills:  []string{"add-llm-provider"},
 		Agents:  []string{"review", "research"},
 	}
-	if err := startTUI(session, log.New(), "model", "", "simple", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, resources, scheduleDefaults(nil), tuiHooks{}); err != nil {
+	if err := startTUI(session, log.New(), "model", "", "simple", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, resources, scheduleDefaults(nil), tuiHooks{}, tuiPeerOptions{}); err != nil {
 		t.Fatalf("startTUI() error = %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestStartTUICommandExecution(t *testing.T) {
 	_, stderrBuf, restore := setupTUIStreams(t, "/help\n/exit\n")
 	defer restore()
 
-	if err := startTUI(session, log.New(), "model", "", "general", t.TempDir(), nil, registry, nil, false, output.ModeCompact, true, "", false, startupResources{}, scheduleDefaults(nil), tuiHooks{}); err != nil {
+	if err := startTUI(session, log.New(), "model", "", "general", t.TempDir(), nil, registry, nil, false, output.ModeCompact, true, "", false, startupResources{}, scheduleDefaults(nil), tuiHooks{}, tuiPeerOptions{}); err != nil {
 		t.Fatalf("startTUI() error = %v", err)
 	}
 
@@ -497,7 +497,7 @@ func TestStartTUIBlankInputIgnored(t *testing.T) {
 	defer restore()
 
 	// Blank and whitespace-only lines must be ignored, not sent to the agent.
-	if err := startTUI(session, log.New(), "model", "", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, startupResources{}, scheduleDefaults(nil), tuiHooks{}); err != nil {
+	if err := startTUI(session, log.New(), "model", "", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, startupResources{}, scheduleDefaults(nil), tuiHooks{}, tuiPeerOptions{}); err != nil {
 		t.Fatalf("startTUI() error = %v", err)
 	}
 
@@ -519,7 +519,7 @@ func TestStartTUISessionSwitching(t *testing.T) {
 	_, stderrBuf, restore := setupTUIStreams(t, "/clear\n/exit\n")
 	defer restore()
 
-	if err := startTUI(session, log.New(), "model", "", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, startupResources{}, scheduleDefaults(nil), tuiHooks{}); err != nil {
+	if err := startTUI(session, log.New(), "model", "", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, startupResources{}, scheduleDefaults(nil), tuiHooks{}, tuiPeerOptions{}); err != nil {
 		t.Fatalf("startTUI() error = %v", err)
 	}
 
@@ -536,7 +536,7 @@ func TestStartTUIScannerFallback(t *testing.T) {
 	// stdin is a *strings.Reader (not an *os.File), so startTUI must take the
 	// scanner fallback path rather than the raw terminal editor. The prompt
 	// "hello" should reach the agent and produce a live context.
-	if err := startTUI(session, log.New(), "model", "", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, startupResources{}, scheduleDefaults(nil), tuiHooks{}); err != nil {
+	if err := startTUI(session, log.New(), "model", "", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, startupResources{}, scheduleDefaults(nil), tuiHooks{}, tuiPeerOptions{}); err != nil {
 		t.Fatalf("startTUI() error = %v", err)
 	}
 
@@ -797,5 +797,69 @@ func TestIsTerminalStream(t *testing.T) {
 	}
 	if isTerminalStream(nil) {
 		t.Fatal("isTerminalStream(nil) = true, want false")
+	}
+}
+
+func newAsyncTurnState(t *testing.T) *tuiState {
+	t.Helper()
+	return &tuiState{
+		session:    newTUISession(t, "async-turns"),
+		cliOutput:  output.NewCLIOutput(output.ModeCompact),
+		outputMode: output.ModeCompact,
+		registry:   newTestRegistry(),
+		asyncWake:  make(chan struct{}, 1),
+		asyncTurns: make(chan *asyncTurn, 4),
+	}
+}
+
+func TestBackgroundTurnCtrlCCancelsTurnNotTUI(t *testing.T) {
+	state := newAsyncTurnState(t)
+	result := make(chan error, 1)
+	go func() {
+		result <- state.queueAsyncTurn(context.Background(), func(ctx context.Context, _ <-chan struct{}) error {
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+	<-state.asyncWake
+	state.runQueuedAsyncTurns(ansi.NewTerminal(strings.NewReader("\x03"), &bytes.Buffer{}))
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("turn error = %v, want context.Canceled", err)
+	}
+}
+
+func TestBackgroundTurnEscapeCancelsTurn(t *testing.T) {
+	state := newAsyncTurnState(t)
+	result := make(chan error, 1)
+	go func() {
+		result <- state.queueAsyncTurn(context.Background(), func(ctx context.Context, _ <-chan struct{}) error {
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+	<-state.asyncWake
+	var terminalOutput bytes.Buffer
+	state.runQueuedAsyncTurns(ansi.NewTerminal(strings.NewReader("\x1b "), &terminalOutput))
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("turn error = %v, want context.Canceled", err)
+	}
+	if !strings.Contains(terminalOutput.String(), "stopping…") {
+		t.Fatalf("terminal output = %q", terminalOutput.String())
+	}
+}
+
+func TestBackgroundTurnQueuedAtExitFails(t *testing.T) {
+	state := newAsyncTurnState(t)
+	result := make(chan error, 1)
+	go func() {
+		result <- state.queueAsyncTurn(context.Background(), func(context.Context, <-chan struct{}) error {
+			t.Error("turn ran after the TUI stopped")
+			return nil
+		})
+	}()
+	<-state.asyncWake
+	state.stopAsyncTurns()
+	if err := <-result; !errors.Is(err, errTUIClosed) {
+		t.Fatalf("turn error = %v, want errTUIClosed", err)
 	}
 }

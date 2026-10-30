@@ -37,6 +37,13 @@ type Options struct {
 	Run                Runner
 	Timeout            time.Duration
 	Now                func() time.Time
+
+	// ResumeCommand replaces the default "caretz -s <id> --adapter <a>"
+	// resume command for sessions reopened another way, such as peer bots.
+	ResumeCommand []string
+	// DisplayName replaces "caretz" as the pane's name in Herdr's agent list,
+	// so peer bots show up by name.
+	DisplayName string
 }
 
 type report struct {
@@ -55,6 +62,8 @@ type Reporter struct {
 	configRoot         string
 	configRootSupplied bool
 	resumable          bool
+	resumeCommand      []string
+	displayName        string
 	run                Runner
 	timeout            time.Duration
 	now                func() time.Time
@@ -95,7 +104,8 @@ func NewFromEnvironment(opts Options) *Reporter {
 	r := &Reporter{
 		bin: bin, pane: pane, adapter: strings.TrimSpace(opts.Adapter),
 		configRoot: strings.TrimSpace(opts.ConfigRoot), configRootSupplied: opts.ConfigRootSupplied, resumable: opts.Resumable,
-		run: run, timeout: timeout, now: now, reports: make(chan report, 1),
+		resumeCommand: append([]string(nil), opts.ResumeCommand...), displayName: strings.TrimSpace(opts.DisplayName), run: run, timeout: timeout, now: now,
+		reports: make(chan report, 1),
 	}
 	go r.loop()
 	return r
@@ -130,6 +140,10 @@ func (r *Reporter) Close() {
 	rep := report{release: true, seq: r.nextSequenceLocked()}
 	close(r.reports)
 	r.mu.Unlock()
+	if r.displayName != "" {
+		// The pane outlives the bot; don't leave its name behind.
+		r.sendMetadata("--clear-display-agent")
+	}
 	r.send(rep)
 }
 
@@ -156,9 +170,21 @@ func (r *Reporter) nextSequenceLocked() uint64 {
 }
 
 func (r *Reporter) loop() {
+	named := false
 	for rep := range r.reports {
 		r.send(rep)
+		if !named && r.displayName != "" {
+			// Herdr attaches the name to the agent, so register it first.
+			r.sendMetadata("--display-agent", r.displayName)
+			named = true
+		}
 	}
+}
+
+func (r *Reporter) sendMetadata(args ...string) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+	defer cancel()
+	_ = r.run(ctx, r.bin, append([]string{"pane", "report-metadata", r.pane, "--source", "caretz"}, args...))
 }
 
 func (r *Reporter) send(rep report) {
@@ -187,6 +213,9 @@ func (r *Reporter) resumeArgs(sessionID string) []string {
 	if r.adapter != "" {
 		args = append(args, "--adapter", r.adapter)
 	}
+	if len(r.resumeCommand) > 0 {
+		args = append([]string(nil), r.resumeCommand...)
+	}
 	if r.configRootSupplied && r.configRoot != "" {
 		// The resolved root is required only when the caller explicitly selected it.
 		args = append(args, "--config-root", r.configRoot)
@@ -199,6 +228,10 @@ func (r *Reporter) resumeArgs(sessionID string) []string {
 
 func validResumeArgs(args []string) bool {
 	if len(args) == 0 || len(args) > maxResumeArgs {
+		return false
+	}
+	// Herdr rejects the whole report when the command is a path.
+	if strings.ContainsRune(args[0], '/') {
 		return false
 	}
 	total := 0
