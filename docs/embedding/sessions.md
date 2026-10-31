@@ -59,3 +59,10 @@ The [coderun](https://github.com/makkalot/caretz/tree/main/examples/coderun)
 example streams context events to a browser over server-sent events. It also
 shows permission prompts to the user and answers them with
 `Session.ResolvePermission`.
+
+Turns run with `CallUntilStopWithPermissions` can also ask the user questions
+with the `AskUser` tool. A question arrives as a permission request whose
+capability is `eventing.PermissionCapabilityQuestion`. Read the questions with
+`eventing.DecodeQuestions`. Answer by allowing it with
+`eventing.QuestionAnswersMetadata` as the metadata, or deny it to skip. A
+plain allow without answers tells the model to use its recommendations.

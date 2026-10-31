@@ -539,7 +539,7 @@ func goalWorkerProtected(workspace string, state goal.State, task goal.Task) []s
 // weakened; the hash check at verification is only a backstop.
 func runGoalWorker(ctx context.Context, session *agent.AgentSession, state goal.State, task goal.Task) (goal.Handoff, error) {
 	protected := goalWorkerProtected(session.WorkspaceDir(), state, task)
-	workerRegistry := goalRegistry(session).WithoutSessionTools().WithDisabledTools(map[string]bool{"CallSubagent": true}).WithProtectedPaths(protected...)
+	workerRegistry := goalRegistry(session).WithoutSessionTools().WithDisabledTools(map[string]bool{"CallSubagent": true, "AskUser": true}).WithProtectedPaths(protected...)
 	// An empty system prompt keeps the session's own prompt for the worker.
 	child, err := session.NewSubagentChildSession(ctx, subagents.Definition{Name: "goal-worker"}, agent.SubagentChildOptions{
 		Prefix: "goal-worker", ToolRegistry: workerRegistry, IsolatedExecution: len(protected) > 0,

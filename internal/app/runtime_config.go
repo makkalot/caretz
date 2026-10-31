@@ -392,6 +392,7 @@ type baseFlagValues struct {
 	LoopGuard              string         `flag:"loop-guard" help:"Loop guard mode: off, shadow, or active (overrides config and CARETZ_LOOP_GUARD)" group:"Agent behavior"`
 	LoopGuardModel         string         `flag:"loop-guard-model" help:"Model REF the loop guard's judge runs on (overrides config; default: the session's model)" group:"Agent behavior"`
 	LoopGuardReasoning     string         `flag:"loop-guard-reasoning" help:"Reasoning effort for the loop guard's judge model (overrides config)" group:"Agent behavior"`
+	LoopGuardCheckEvery    int            `flag:"loop-guard-check-every" help:"Have the loop guard's judge check a turn every N tool calls, even without failures; 0 disables (default 20, overrides config)" group:"Agent behavior"`
 	UnrestrictedNetwork    bool           `flag:"unrestricted-network" help:"Allow unrestricted network access in sandbox" group:"Execution and sandbox"`
 	AllowLoopback          bool           `flag:"allow-loopback" help:"Allow sandboxed localhost TCP listeners and connections" group:"Execution and sandbox"`
 	AllowDocker            bool           `flag:"allow-docker" help:"Allow sandboxed Bash commands to use the host Docker daemon" group:"Execution and sandbox"`
@@ -423,7 +424,7 @@ func prepareBaseFlags(values *baseFlagValues) {
 
 func recordBaseFlagVisits(parsed clicmd.ParsedOptions, values *baseFlagValues) {
 	values.Changed = map[string]bool{}
-	for _, name := range []string{"profile", "api-key", "base-url", "model", "reasoning", "no-model-discovery", "context-window", "reserved-tokens", "keep-recent-tokens", "summary-tokens", "llm-timeout", "llm-max-attempts", "permission-timeout", "system-prompt", "system-prompt-file", "tools", "disable-tool", "tasks", "no-tasks", "allow-docker", "allow-loopback", "ask-sandbox-off", "session-exec", "unrestricted-network", "plan", "read-root", "writable-root", "network-allow", "sandbox-env", "sandbox-env-file", "config-root", "incognito", "output", "theme"} {
+	for _, name := range []string{"profile", "api-key", "base-url", "model", "reasoning", "no-model-discovery", "context-window", "reserved-tokens", "keep-recent-tokens", "summary-tokens", "llm-timeout", "llm-max-attempts", "permission-timeout", "system-prompt", "system-prompt-file", "tools", "disable-tool", "tasks", "no-tasks", "allow-docker", "allow-loopback", "ask-sandbox-off", "session-exec", "unrestricted-network", "plan", "read-root", "writable-root", "network-allow", "sandbox-env", "sandbox-env-file", "config-root", "incognito", "output", "theme", "loop-guard-check-every"} {
 		if parsed.Changed(name) {
 			values.Changed[name] = true
 		}
@@ -1030,6 +1031,8 @@ func resolveDisableTasks(fileConfig config.Config, mode taskFlagMode) bool {
 
 type loopGuardFlags struct {
 	Mode, Model, Reasoning string
+	// CheckEvery is the --loop-guard-check-every value, nil when not given.
+	CheckEvery *int
 }
 
 // resolveLoopGuard reads the profile's loopGuard block; CARETZ_LOOP_GUARD
@@ -1050,6 +1053,16 @@ func resolveLoopGuard(profile config.LoopGuard, flags loopGuardFlags, getenv fun
 	cfg := loopguard.Config{Mode: mode, JudgeTimeout: profile.JudgeTimeout.Duration}
 	if profile.RepeatThreshold != nil {
 		cfg.RepeatThreshold = *profile.RepeatThreshold
+	}
+	cfg.CheckEvery = loopguard.DefaultCheckEvery
+	if profile.CheckEvery != nil {
+		cfg.CheckEvery = *profile.CheckEvery
+	}
+	if flags.CheckEvery != nil {
+		if *flags.CheckEvery < 0 {
+			return loopguard.Config{}, fmt.Errorf("--loop-guard-check-every must be >= 0")
+		}
+		cfg.CheckEvery = *flags.CheckEvery
 	}
 	if profile.Judge != nil {
 		cfg.JudgeModel = strings.TrimSpace(profile.Judge.Model)

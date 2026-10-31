@@ -97,7 +97,7 @@ func TestRootHelpGroupsEveryFlag(t *testing.T) {
 		"Session and input":           {"adapter", "incognito", "p", "prompt-file", "s"},
 		"Workspace and configuration": {"config-root", "profile", "workspace"},
 		"Model and context":           {"allow-model", "api-key", "base-url", "context-window", "keep-recent-tokens", "llm-max-attempts", "llm-timeout", "model", "no-model-discovery", "reasoning", "reserved-tokens", "summary-tokens"},
-		"Agent behavior":              {"disable-tool", "loop-guard", "loop-guard-model", "loop-guard-reasoning", "no-tasks", "system-prompt", "system-prompt-file", "tasks", "tools"},
+		"Agent behavior":              {"disable-tool", "loop-guard", "loop-guard-check-every", "loop-guard-model", "loop-guard-reasoning", "no-tasks", "system-prompt", "system-prompt-file", "tasks", "tools"},
 		"Execution and sandbox":       {"allow-docker", "allow-loopback", "ask-sandbox-off", "network-allow", "permission-timeout", "plan", "read-root", "sandbox-env", "sandbox-env-file", "session-exec", "unrestricted-network", "writable-root"},
 		"Output and diagnostics":      {"output", "theme", "v", "vv"},
 		"General":                     {"version"},

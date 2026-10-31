@@ -327,6 +327,8 @@ func (a *AgentSession) resolveSubagentModel(ctx context.Context, request Subagen
 func SubagentToolRegistry(session *AgentSession, def subagents.Definition) *tools.Registry {
 	disabled := subagents.DisabledTools(def.Permission)
 	disabled[callSubagentToolName] = true
+	// Subagents report back to the parent model, which asks the user.
+	disabled[tools.AskUserToolName] = true
 	return session.ToolRegistry().WithDisabledTools(disabled)
 }
 

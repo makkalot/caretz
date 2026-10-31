@@ -433,9 +433,14 @@ func permissionLifecycle(lifecycle lifecycleReporter, session *agent.AgentSessio
 			return false
 		},
 		blocked: func(request eventing.PermissionRequest) {
-			if lifecycle != nil {
-				lifecycle.Report(herdr.StateBlocked, "Permission required by "+request.ToolName, session.ChannelID())
+			if lifecycle == nil {
+				return
 			}
+			if request.Capability == eventing.PermissionCapabilityQuestion {
+				lifecycle.Report(herdr.StateBlocked, "Question: "+request.Reason, session.ChannelID())
+				return
+			}
+			lifecycle.Report(herdr.StateBlocked, "Permission required by "+request.ToolName, session.ChannelID())
 		},
 		working: func() {
 			if lifecycle != nil {
@@ -585,6 +590,9 @@ func promptPermission(terminal *ansi.Terminal, request eventing.PermissionReques
 	}
 	if request.Capability == cloudModelCapability || request.Capability == modelOverrideCapability {
 		return cloudConsentResolution(terminal, request)
+	}
+	if request.Capability == eventing.PermissionCapabilityQuestion {
+		return questionResolution(terminal, request)
 	}
 	decision, err := readPermissionDecision(terminal, request)
 	return eventing.PermissionResolution{RequestID: request.RequestID, Decision: decision, Resolver: "tui"}, err

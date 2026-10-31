@@ -41,7 +41,7 @@ func writeLoopGuardJudged(w io.Writer, style Style, mode Mode, record agent.Loop
 	case record.Redirected:
 		action = style.Warning(verdict + " → redirected the agent")
 	case record.Escalated:
-		action = style.Error(verdict + " → still stuck after redirect")
+		action = style.Error(verdict + " → still stuck after redirect, ending the turn")
 	case v.Stuck && record.Mode == "shadow":
 		action = style.Warning(verdict + " → shadow mode, no redirect")
 	case v.Stuck:

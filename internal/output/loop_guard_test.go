@@ -24,7 +24,7 @@ func TestWriteLoopGuardJudged(t *testing.T) {
 		{"shadow", ModeCompact, agent.LoopGuardJudged{Mode: "shadow", Verdict: stuck},
 			[]string{"stuck (0.90) → shadow mode, no redirect"}, nil},
 		{"escalated", ModeCompact, agent.LoopGuardJudged{Mode: "active", Verdict: stuck, Escalated: true},
-			[]string{"still stuck after redirect"}, nil},
+			[]string{"still stuck after redirect, ending the turn"}, nil},
 		{"not stuck", ModeCompact, agent.LoopGuardJudged{Mode: "active", Verdict: loopguard.Verdict{Confidence: 0.3, Reason: "new errors each run", Alternative: "ignored"}},
 			[]string{"[loop-guard] not stuck (0.30)", "reason: new errors each run"}, []string{"try instead"}},
 		{"error", ModeCompact, agent.LoopGuardJudged{Mode: "active", Error: "context deadline exceeded"},

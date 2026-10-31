@@ -417,7 +417,11 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	sandboxSettings.ReadOnlyPaths = appendUniqueStrings(sandboxSettings.ReadOnlyPaths, agentsDirs...)
 	sandboxSettings.HiddenPaths = []string{homeConfigPath, projectConfigPath, config.CredentialsPath(homeConfigPath)}
 	disableTasks := resolveDisableTasks(fileConfig, baseFlags.TaskMode)
-	loopGuard, err := resolveLoopGuard(profile.LoopGuard, loopGuardFlags{Mode: baseFlags.LoopGuard, Model: baseFlags.LoopGuardModel, Reasoning: baseFlags.LoopGuardReasoning}, os.Getenv)
+	guardFlags := loopGuardFlags{Mode: baseFlags.LoopGuard, Model: baseFlags.LoopGuardModel, Reasoning: baseFlags.LoopGuardReasoning}
+	if baseFlags.Changed["loop-guard-check-every"] {
+		guardFlags.CheckEvery = &baseFlags.LoopGuardCheckEvery
+	}
+	loopGuard, err := resolveLoopGuard(profile.LoopGuard, guardFlags, os.Getenv)
 	if err != nil {
 		output.Errorf(stderr, "%v", err)
 		return nil, 1

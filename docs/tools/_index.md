@@ -23,6 +23,7 @@ caretz --disable-tool Bash -p "review this diff without running anything"
 | `Bash` | Run commands in the [sandbox](../sandboxing/_index.md) | Always |
 | `UpdateTasks`, `ListTasks` | Track multi-step work | Unless `--no-tasks` |
 | `CallSubagent` | Hand a job to a [subagent](../customization/subagents.md) | Always |
+| `AskUser` | Ask you [multiple-choice questions](../cli/questions.md) | When someone can answer |
 | `WebFetch` | Read a public web page | Always |
 | `WebSearch` | Search the web | With an API key, see [Web search and fetch](web.md) |
 | `LocalImage` | Describe an image with a local vision model | When [configured](local-image.md) |
