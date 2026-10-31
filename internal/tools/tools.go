@@ -374,6 +374,8 @@ func (r *Registry) HandleToolCallContext(ctx context.Context, toolCall llm.ToolC
 			return llm.Message{}, fmt.Errorf("invalid tool")
 		}
 		return r.handleLocalImageToolCall(ctx, toolCall)
+	case AskUserToolName:
+		return r.handleAskUserToolCall(ctx, toolCall)
 	case "UpdateTasks":
 		return llm.Message{}, fmt.Errorf("UpdateTasks is only available inside an agent session")
 	case "ListTasks":
@@ -1054,7 +1056,7 @@ func isBuiltInToolName(name string) bool {
 	switch name {
 	case "Read", "Edit", "Write", "Find", "Bash", "Grep", "Ls",
 		"UpdateTasks", "ListTasks", "CallSubagent",
-		"WebSearch", "WebFetch", "LocalImage", "SendFile":
+		"WebSearch", "WebFetch", "LocalImage", "SendFile", AskUserToolName:
 		return true
 	default:
 		return false

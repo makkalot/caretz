@@ -108,8 +108,46 @@ func TestErrorRateTrigger(t *testing.T) {
 	}
 }
 
-func TestDecideRedirectCapAndEscalation(t *testing.T) {
+func TestCheckpointTriggerWithoutFailures(t *testing.T) {
+	g := New(Config{Mode: ModeActive, CheckEvery: 4}, "refactor the parser")
+	for i := 0; i < 3; i++ {
+		g.Observe("Read", `{"file_path":"parser.go"}`, "content", false)
+	}
+	if g.Trigger() != "" {
+		t.Fatalf("triggered before the checkpoint: %s", g.Trigger())
+	}
+	g.Observe("Read", `{"file_path":"parser.go"}`, "content", false)
+	if !strings.HasPrefix(g.Trigger(), "checkpoint: 4 tool calls") {
+		t.Fatalf("want checkpoint trigger, got %q", g.Trigger())
+	}
+	if d := g.Digest(); !strings.Contains(d, "Repeated identical calls:\n- 4× Read parser.go") {
+		t.Fatalf("digest does not show repeated calls:\n%s", d)
+	}
+	g.Judged()
+	for i := 0; i < 3; i++ {
+		g.Observe("Grep", `{"pattern":"x"}`, "match", false)
+	}
+	if g.Trigger() != "" {
+		t.Fatalf("checkpoint re-armed early: %s", g.Trigger())
+	}
+	g.Observe("Grep", `{"pattern":"x"}`, "match", false)
+	if g.Trigger() == "" {
+		t.Fatal("checkpoint did not re-arm after another 4 calls")
+	}
+}
+
+func TestCheckpointOffByDefaultInConfig(t *testing.T) {
 	g := New(Config{Mode: ModeActive}, "task")
+	for i := 0; i < 30; i++ {
+		g.Observe("Read", `{"file_path":"a.go"}`, "content", false)
+	}
+	if g.Trigger() != "" {
+		t.Fatalf("CheckEvery 0 triggered: %s", g.Trigger())
+	}
+}
+
+func TestDecideRedirectThenWrapUp(t *testing.T) {
+	g := New(Config{Mode: ModeActive}, "make the tests pass")
 	failBash(g, 3, "undefined: Foo")
 	stuck := Verdict{Stuck: true, Confidence: 0.9, Reason: "Foo is never defined", Alternative: "add the missing import"}
 
@@ -117,12 +155,17 @@ func TestDecideRedirectCapAndEscalation(t *testing.T) {
 		t.Fatalf("low confidence acted: %+v", a)
 	}
 	first := g.Decide(stuck)
-	if !strings.Contains(first.Redirect, "3 times") || !strings.Contains(first.Redirect, "add the missing import") {
-		t.Fatalf("unexpected redirect: %q", first.Redirect)
+	if first.WrapUp || first.Escalate != "" {
+		t.Fatalf("first verdict should only redirect: %+v", first)
+	}
+	for _, want := range []string{"not from the user", "3 times", "Diagnosis: Foo is never defined", "Try instead: add the missing import", `request for this turn: "make the tests pass"`} {
+		if !strings.Contains(first.Note, want) {
+			t.Fatalf("redirect lacks %q:\n%s", want, first.Note)
+		}
 	}
 	second := g.Decide(stuck)
-	if second.Redirect != "" || second.Escalate == "" {
-		t.Fatalf("want escalation after cap, got %+v", second)
+	if !second.WrapUp || second.Escalate == "" || !strings.Contains(second.Note, "tools are no longer available") {
+		t.Fatalf("want wrap-up after cap, got %+v", second)
 	}
 	if third := g.Decide(stuck); third != (Action{}) {
 		t.Fatalf("escalated twice: %+v", third)
@@ -157,6 +200,50 @@ func TestDigestNamesFailuresAndEdits(t *testing.T) {
 		if !strings.Contains(d, want) {
 			t.Errorf("digest missing %q:\n%s", want, d)
 		}
+	}
+}
+
+func TestDigestShowsWholeTurnIntentAndEarlierChecks(t *testing.T) {
+	g := New(Config{Mode: ModeShadow, CheckEvery: 3}, "add a --json flag to the export command")
+	for i, note := range []string{"Reading the export command.", "Checking how other flags are parsed.", "Looking at the CI config.", "Reviewing the release workflow."} {
+		g.ObserveResponse(note, int64(1000*(i+1)))
+	}
+	g.Observe("Read", `{"file_path":"cmd/export.go"}`, "content", false)
+	g.Observe("Read", `{"file_path":".github/workflows/ci.yml"}`, "content", false)
+	failBash(g, 1, "no such file")
+	g.Decide(Verdict{Confidence: 0.6, Reason: "still exploring the command"})
+	g.Judged()
+
+	d := g.Digest()
+	for _, want := range []string{
+		"Turn so far: 3 tool calls (1 failed) over ",
+		", 4000 tokens used",
+		"Calls per tool: Read 2, Bash 1 (1 failed)",
+		"Files touched (2): cmd/export.go, .github/workflows/ci.yml",
+		"What the agent said it is doing (latest last):\n- Checking how other flags are parsed.\n- Looking at the CI config.\n- Reviewing the release workflow.",
+		"Earlier checks this turn:\n- after call 3 (checkpoint: 3 tool calls since the last check): not stuck (0.60): still exploring the command",
+	} {
+		if !strings.Contains(d, want) {
+			t.Errorf("digest missing %q:\n%s", want, d)
+		}
+	}
+	if strings.Contains(d, "Reading the export command.") {
+		t.Errorf("digest keeps more than %d agent notes:\n%s", maxAssistantNotes, d)
+	}
+}
+
+func TestDigestAddsPreviousExchangeOnlyForFollowUps(t *testing.T) {
+	short := New(Config{Mode: ModeShadow}, "continue")
+	short.SetPrevious("migrate the users table to the new schema", "I updated the migration; next I'll verify it locally.")
+	d := short.Digest()
+	if !strings.Contains(d, "previous user message: migrate the users table") || !strings.Contains(d, "previous agent answer (start): I updated the migration") {
+		t.Fatalf("follow-up digest lacks the previous exchange:\n%s", d)
+	}
+
+	long := New(Config{Mode: ModeShadow}, strings.Repeat("a detailed task description ", 10))
+	long.SetPrevious("earlier task", "earlier answer")
+	if d := long.Digest(); strings.Contains(d, "earlier task") {
+		t.Fatalf("self-contained task still shows the previous exchange:\n%s", d)
 	}
 }
 

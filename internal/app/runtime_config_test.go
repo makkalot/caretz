@@ -336,6 +336,24 @@ func TestResolveLoopGuardJudgeFlags(t *testing.T) {
 	}
 }
 
+func TestResolveLoopGuardCheckEvery(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	twenty, zero, negative := 20, 0, -1
+
+	if cfg, _ := resolveLoopGuard(config.LoopGuard{}, loopGuardFlags{}, noEnv); cfg.CheckEvery != loopguard.DefaultCheckEvery {
+		t.Fatalf("default CheckEvery = %d, want %d", cfg.CheckEvery, loopguard.DefaultCheckEvery)
+	}
+	if cfg, _ := resolveLoopGuard(config.LoopGuard{CheckEvery: &twenty}, loopGuardFlags{}, noEnv); cfg.CheckEvery != 20 {
+		t.Fatalf("config CheckEvery = %d, want 20", cfg.CheckEvery)
+	}
+	if cfg, _ := resolveLoopGuard(config.LoopGuard{CheckEvery: &twenty}, loopGuardFlags{CheckEvery: &zero}, noEnv); cfg.CheckEvery != 0 {
+		t.Fatalf("--loop-guard-check-every 0 = %d, want 0 (off)", cfg.CheckEvery)
+	}
+	if _, err := resolveLoopGuard(config.LoopGuard{}, loopGuardFlags{CheckEvery: &negative}, noEnv); err == nil {
+		t.Fatal("negative --loop-guard-check-every error = nil")
+	}
+}
+
 func TestTaskFlagsRejectConflict(t *testing.T) {
 	var values baseFlagValues
 	prepareBaseFlags(&values)

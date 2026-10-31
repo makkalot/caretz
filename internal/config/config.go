@@ -128,9 +128,12 @@ type GoalRole struct {
 // judge model whether the turn is stuck. Mode is off, shadow (judge and log
 // only) or active (redirect the agent once, then notify the user).
 type LoopGuard struct {
-	Mode            string   `json:"mode"`
-	RepeatThreshold *int     `json:"repeatThreshold"`
-	JudgeTimeout    Duration `json:"judgeTimeout"`
+	Mode            string `json:"mode"`
+	RepeatThreshold *int   `json:"repeatThreshold"`
+	// CheckEvery has the judge look at a turn after this many tool calls,
+	// failures or not; 0 turns the checkpoint off.
+	CheckEvery   *int     `json:"checkEvery"`
+	JudgeTimeout Duration `json:"judgeTimeout"`
 	// Judge picks the judge's model; unset uses the session's current model.
 	Judge *GoalRole `json:"judge"`
 }
@@ -1136,6 +1139,9 @@ func mergeLoopGuard(base, override LoopGuard) LoopGuard {
 	if override.RepeatThreshold != nil {
 		base.RepeatThreshold = override.RepeatThreshold
 	}
+	if override.CheckEvery != nil {
+		base.CheckEvery = override.CheckEvery
+	}
 	if override.JudgeTimeout.Set {
 		base.JudgeTimeout = override.JudgeTimeout
 	}
@@ -1151,6 +1157,9 @@ func validateLoopGuard(guard LoopGuard, profile string) error {
 	}
 	if guard.RepeatThreshold != nil && *guard.RepeatThreshold < 2 {
 		return fmt.Errorf("config profiles.%s.loopGuard.repeatThreshold must be >= 2", profile)
+	}
+	if guard.CheckEvery != nil && *guard.CheckEvery < 0 {
+		return fmt.Errorf("config profiles.%s.loopGuard.checkEvery must be >= 0", profile)
 	}
 	if guard.JudgeTimeout.Set && guard.JudgeTimeout.Duration <= 0 {
 		return fmt.Errorf("config profiles.%s.loopGuard.judgeTimeout must be positive", profile)

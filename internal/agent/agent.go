@@ -389,6 +389,7 @@ func (a *AgentSession) CallUntilStopWithPermissions(ctx context.Context, prompt 
 	}
 	ctx = tools.WithPermissionRequester(ctx, a.requestPermission)
 	ctx = tools.WithSessionPermissions(ctx, a.hasSessionPermissionGrant)
+	ctx = tools.WithQuestionAsker(ctx, a.askQuestions)
 	if err := a.executionMu.LockContext(ctx); err != nil {
 		return nil, err
 	}
@@ -804,7 +805,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 	}
 	consecutiveEmptyResponses := 0
 	contextSizeRecoveries := 0
-	loopGuard := a.newTurnLoopGuard(newMessage.Content, summary)
+	loopGuard := a.newTurnLoopGuard(messages, summary)
 	for iteration := 1; ; iteration++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -816,7 +817,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 		var toolDefs []llm.ToolDefinition
 		var systemPrompt string
 		if !summary {
-			toolDefs = a.llmToolDefinitions
+			toolDefs = withAskUser(ctx, a.toolRegistry, a.llmToolDefinitions)
 			systemPrompt = a.systemPrompt
 			if iteration > 1 && a.contextManager != nil && a.contextManager.IsCompactionRequired(messages, toolDefs) {
 				result, err := a.compactContext(ctx, originatorID, parentOriginatorID, parentOriginatorVersion, "mid-loop", newMessage.Content)
@@ -849,6 +850,10 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			}
 		}
 
+		if loopGuard.wrappingUp() {
+			toolDefs = nil
+		}
+
 		requestEstimate := 0
 		if a.contextManager != nil && !summary {
 			requestEstimate = a.contextManager.EstimateRawTokens(messages, toolDefs)
@@ -874,7 +879,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 		if !summary {
 			a.publishLLMReasoningStarted(originatorID, parentOriginatorID, parentOriginatorVersion)
 		}
-		result, err := llm.ChatContext(requestCtx, provider, systemPrompt, messages, toolDefs, func(delta string) {
+		result, err := llm.ChatContext(requestCtx, provider, systemPrompt, loopGuard.request(messages), toolDefs, func(delta string) {
 			if !summary {
 				a.publishAssistantDelta(delta, false)
 			}
@@ -1020,6 +1025,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 		if !summary {
 			a.setActiveMessages(messages)
 		}
+		loopGuard.observeResponse(result, cumulativeTotal)
 		agentMessageEvent := eventing.NewLLMAgentMessageWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, result.Message, result.Usage, cumulativeTotal, result.ReasoningSummary, a.tokenEstimateMultiplier())
 		if _, err := a.contextSessionStore.AppendAgentMessage(agentMessageEvent); err != nil {
 			a.logger.Warn("Failed to append agent message to context store: %v", err)
@@ -1029,8 +1035,8 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
-			// The loop guard judges once per batch, on its last result, so a
-			// redirect lands where the model reads next.
+			// The loop guard judges once per batch, on its last result, so it
+			// sees the whole batch before the next request.
 			lastInBatch := i == len(result.ToolCalls)-1
 			a.logger.Debug("Iteration %d: tool call %s (id: %s) arguments: %s", iteration, tc.Name, tc.ID, tc.Arguments)
 			toolStart := time.Now()
@@ -1043,7 +1049,11 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 				if err := ctx.Err(); err != nil {
 					return nil, err
 				}
-				if !summary && a.toolRegistry != nil && !a.toolRegistry.IsToolEnabled(tc.Name) {
+				if loopGuard.wrappingUp() {
+					// The request went without tools; a provider that still
+					// returns calls doesn't get them run.
+					err = errors.New("not run: the loop guard ended tool use for this turn; reply with your final answer")
+				} else if !summary && a.toolRegistry != nil && !a.toolRegistry.IsToolEnabled(tc.Name) {
 					err = fmt.Errorf("tool %s is disabled", tc.Name)
 				} else if !summary && tc.Name == updateTasksToolName {
 					toolCallRes, err = a.handleUpdateTasksToolCall(originatorID, parentOriginatorID, parentOriginatorVersion, tc)
@@ -1098,7 +1108,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 					Content:    contentErr,
 					ToolCallID: tc.ID,
 				}
-				toolCallMessage.Content += loopGuard.afterToolResult(ctx, a, tc, contentErr, true, lastInBatch)
+				loopGuard.afterToolResult(ctx, a, tc, contentErr, true, lastInBatch)
 
 				messages = append(messages, toolCallMessage)
 				if !summary {
@@ -1115,7 +1125,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			}
 
 			a.logger.Info("%s tool %s ok %s %dB %s", modelTag, tc.Name, formatDuration(time.Since(toolStart)), len(toolCallRes.Content), toolArgSummary(tc.Arguments))
-			toolCallRes.Content += loopGuard.afterToolResult(ctx, a, tc, toolCallRes.Content, false, lastInBatch)
+			loopGuard.afterToolResult(ctx, a, tc, toolCallRes.Content, false, lastInBatch)
 			messages = append(messages, toolCallRes)
 			if !summary {
 				a.setActiveMessages(messages)

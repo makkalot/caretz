@@ -482,6 +482,7 @@ func TestLoadRejectsInvalidLoopGuard(t *testing.T) {
 		`{"mode":"on"}`:                  "loopGuard.mode",
 		`{"repeatThreshold":1}`:          "loopGuard.repeatThreshold must be >= 2",
 		`{"judgeTimeout":"0s"}`:          "loopGuard.judgeTimeout must be positive",
+		`{"checkEvery":-1}`:              "loopGuard.checkEvery must be >= 0",
 		`{"judge":{"reasoning":"high"}}`: "loopGuard.judge.reasoning requires judge.model",
 	}
 	for guard, want := range tests {
