@@ -15,7 +15,9 @@ route, reports actionable connection errors, selects a default, and saves the
 provider to `~/.config/caretz/config.json`. A hosted provider's API key goes to
 `~/.config/caretz/credentials.json` instead, so `config.json` holds no secrets
 and you can keep it in a dotfiles repo or paste it into a bug report. See
-[Keep API keys out of config.json](api-keys.md).
+[Keep API keys out of config.json](api-keys.md). To run on a ChatGPT
+subscription instead of API credits, pick **ChatGPT plan** among the hosted
+providers; see [Use your ChatGPT plan](chatgpt.md).
 
 ## Configure by Hand
 

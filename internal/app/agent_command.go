@@ -11,6 +11,7 @@ import (
 
 	caretz "github.com/makkalot/caretz"
 	"github.com/makkalot/caretz/internal/agent"
+	"github.com/makkalot/caretz/internal/chatgptauth"
 	"github.com/makkalot/caretz/internal/clicmd"
 	"github.com/makkalot/caretz/internal/config"
 	"github.com/makkalot/caretz/internal/log"
@@ -283,7 +284,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		if strings.TrimSpace(reasoningEffort) != "" {
 			settings.ReasoningEffort = strings.TrimSpace(reasoningEffort)
 		}
-		provider := llm.NewOpenAIProviderWithOptions(settings.APIKey, settings.BaseURL, settings.Model, llm.OpenAIProviderOptions{
+		provider := chatgptauth.NewProvider(settings.APIKey, settings.BaseURL, settings.Model, llm.OpenAIProviderOptions{
 			RequestTimeout:        runtimeConfig.LLMTimeout,
 			DisableRequestTimeout: runtimeConfig.LLMTimeout == 0,
 			MaxAttempts:           runtimeConfig.LLMMaxAttempts,

@@ -27,6 +27,7 @@ type openAIProvider struct {
 	initialBackoff  time.Duration
 	maxBackoff      time.Duration
 	logf            func(string, ...any)
+	chatGPTPlan     bool
 }
 
 const (
@@ -47,6 +48,11 @@ type OpenAIProviderOptions struct {
 	Protocol              string
 	Logf                  func(string, ...any)
 	HTTPClient            *http.Client
+	// ChatGPTPlan shapes requests for ChatGPT plan usage ("Sign in with
+	// ChatGPT"): Responses API only, store:false, developer instead of system
+	// items, and the session ID as prompt_cache_key. HTTPClient must then
+	// supply the account's bearer token.
+	ChatGPTPlan bool
 }
 
 const (
@@ -98,13 +104,15 @@ type chatFunctionToolDef struct {
 }
 
 type responsesRequest struct {
-	Model         string                `json:"model"`
-	Instructions  string                `json:"instructions,omitempty"`
-	Input         []responsesInputItem  `json:"input"`
-	Tools         []responsesTool       `json:"tools,omitempty"`
-	Reasoning     responsesReasoning    `json:"reasoning,omitempty"`
-	Stream        bool                  `json:"stream,omitempty"`
-	StreamOptions responsesStreamOption `json:"stream_options,omitempty"`
+	Model          string                `json:"model"`
+	Instructions   string                `json:"instructions,omitempty"`
+	Input          []responsesInputItem  `json:"input"`
+	Tools          []responsesTool       `json:"tools,omitempty"`
+	Reasoning      responsesReasoning    `json:"reasoning,omitempty"`
+	Stream         bool                  `json:"stream,omitempty"`
+	StreamOptions  responsesStreamOption `json:"stream_options,omitempty"`
+	Store          *bool                 `json:"store,omitempty"`
+	PromptCacheKey string                `json:"prompt_cache_key,omitempty"`
 }
 
 type responsesStreamOption struct {
@@ -161,7 +169,63 @@ func (e *apiError) Error() string {
 	if msg == "" {
 		msg = http.StatusText(e.StatusCode)
 	}
+	if hint := chatGPTPlanErrorHints[e.Code]; hint != "" {
+		msg += " (" + hint + ")"
+	}
 	return fmt.Sprintf("%d %s: %s", e.StatusCode, http.StatusText(e.StatusCode), msg)
+}
+
+// chatGPTPlanErrorStatus maps the error codes of ChatGPT plan usage to the
+// HTTP status they carry, so the ones that arrive inside a stream as
+// response.failed retry like the same error sent before the stream opened.
+var chatGPTPlanErrorStatus = map[string]int{
+	"subscription_sharing_user_not_eligible":      http.StatusForbidden,
+	"subscription_sharing_usage_limit_exceeded":   http.StatusTooManyRequests,
+	"subscription_sharing_usage_unavailable":      http.StatusServiceUnavailable,
+	"subscription_sharing_unsupported_capability": http.StatusBadRequest,
+	"subscription_sharing_route_not_supported":    http.StatusForbidden,
+	"subscription_sharing_invalid_user":           http.StatusUnauthorized,
+	"subscription_sharing_user_unavailable":       http.StatusServiceUnavailable,
+	"chatpass_v2_scope_not_authorized":            http.StatusForbidden,
+	"chatpass_v2_invalid_authorization_context":   http.StatusForbidden,
+}
+
+// chatGPTPlanPermanentErrors fail the same way however often they are sent,
+// so they are never retried; a usage limit in particular is not a rate limit
+// that clears in seconds.
+var chatGPTPlanPermanentErrors = map[string]bool{
+	"subscription_sharing_user_not_eligible":      true,
+	"subscription_sharing_usage_limit_exceeded":   true,
+	"subscription_sharing_unsupported_capability": true,
+	"subscription_sharing_route_not_supported":    true,
+	"chatpass_v2_scope_not_authorized":            true,
+	"chatpass_v2_invalid_authorization_context":   true,
+}
+
+var chatGPTPlanErrorHints = map[string]string{
+	"subscription_sharing_usage_limit_exceeded": "ChatGPT plan usage limit reached; see ChatGPT Settings > Usage",
+	"subscription_sharing_user_not_eligible":    "this ChatGPT account cannot use its plan in other apps",
+	"subscription_sharing_invalid_user":         "run caretz auth login chatgpt to sign in again",
+	"chatpass_v2_scope_not_authorized":          "run caretz auth login chatgpt and allow plan usage",
+}
+
+// streamAPIError turns an error event inside a response stream into the
+// same apiError an HTTP error response would give.
+func streamAPIError(code, message string) error {
+	status, ok := chatGPTPlanErrorStatus[code]
+	switch {
+	case ok:
+	case strings.Contains(code, "rate_limit"):
+		status = http.StatusTooManyRequests
+	default:
+		status = http.StatusInternalServerError
+	}
+	return &apiError{StatusCode: status, Message: message, Code: code}
+}
+
+func isPermanentError(err error) bool {
+	var apiErr *apiError
+	return errors.As(err, &apiErr) && chatGPTPlanPermanentErrors[apiErr.Code]
 }
 
 // NewOpenAIProvider creates a new OpenAI-compatible provider.
@@ -192,6 +256,9 @@ func NewOpenAIProviderWithOptions(apiKey, baseURL, model string, opts OpenAIProv
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	if opts.ChatGPTPlan {
+		opts.Protocol = ProtocolResponses
+	}
 	return &openAIProvider{
 		apiKey:          apiKey,
 		model:           model,
@@ -204,6 +271,7 @@ func NewOpenAIProviderWithOptions(apiKey, baseURL, model string, opts OpenAIProv
 		initialBackoff:  opts.InitialBackoff,
 		maxBackoff:      opts.MaxBackoff,
 		logf:            opts.Logf,
+		chatGPTPlan:     opts.ChatGPTPlan,
 	}
 }
 
@@ -246,22 +314,39 @@ func (p *openAIProvider) listModels(ctx context.Context) ([]string, error) {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
+		// Models is the ChatGPT plan usage shape; only "list" entries are
+		// meant to be offered, and their order is OpenAI's recommendation.
+		Models []struct {
+			Slug       string `json:"slug"`
+			Visibility string `json:"visibility"`
+		} `json:"models"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(resp.Body, 10<<20))
 	if err := decoder.Decode(&payload); err != nil {
 		return nil, fmt.Errorf("decode models response: %w", err)
 	}
-	seen := make(map[string]bool, len(payload.Data))
-	models := make([]string, 0, len(payload.Data))
+	ids := make([]string, 0, len(payload.Data)+len(payload.Models))
 	for _, item := range payload.Data {
-		id := strings.TrimSpace(item.ID)
+		ids = append(ids, item.ID)
+	}
+	for _, item := range payload.Models {
+		if item.Visibility == "" || item.Visibility == "list" {
+			ids = append(ids, item.Slug)
+		}
+	}
+	seen := make(map[string]bool, len(ids))
+	models := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
 		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
 		models = append(models, id)
 	}
-	sort.Strings(models)
+	if len(payload.Models) == 0 {
+		sort.Strings(models)
+	}
 	return models, nil
 }
 
@@ -312,6 +397,9 @@ func (p *openAIProvider) ChatContext(ctx context.Context, systemPrompt string, m
 			return Response{}, ctx.Err()
 		}
 		lastErr = err
+		if isPermanentError(err) {
+			break
+		}
 		rateLimited := isRateLimitError(err)
 		contextSize := IsContextSizeError(err)
 		if contextSize || (!rateLimited && attempt >= attempts) {
@@ -404,6 +492,14 @@ func normalizeProtocol(protocol string) string {
 func (p *openAIProvider) chatResponsesStreaming(ctx context.Context, systemPrompt string, messages []Message, tools []ToolDefinition, onDelta func(string)) (Response, error) {
 	params := p.responseNewParams(systemPrompt, messages, tools)
 	params.Stream = true
+	if p.chatGPTPlan {
+		// Plan usage keeps nothing server side, so every turn resends the
+		// history. The cache key groups a session's requests for prompt
+		// caching; the route accepts it even while it caches nothing.
+		store := false
+		params.Store = &store
+		params.PromptCacheKey = sessionIDFromContext(ctx)
+	}
 
 	resp, err := p.postJSON(ctx, "/responses", params, true)
 	if err != nil {
@@ -470,10 +566,16 @@ func (p *openAIProvider) chatResponsesStreaming(ctx context.Context, systemPromp
 		case "response.completed":
 			usage = fromOpenAIResponseUsage(event.Response.Usage)
 		case "response.failed":
+			if code := event.Response.Error.Code; code != "" {
+				return streamAPIError(code, event.Response.Error.Message)
+			}
 			return fmt.Errorf("response failed: %s", event.Response.Error.Message)
 		case "response.incomplete":
 			return fmt.Errorf("response incomplete: %s", event.Response.IncompleteDetails.Reason)
 		case "error":
+			if event.Code != "" {
+				return streamAPIError(event.Code, event.Message)
+			}
 			return fmt.Errorf("response error: %s", event.Message)
 		}
 		return nil
@@ -525,7 +627,12 @@ func (p *openAIProvider) toResponsesInput(messages []Message) []responsesInputIt
 	for _, msg := range messages {
 		switch msg.Role {
 		case RoleSystem:
-			input = append(input, responsesInputItem{Type: "message", Role: "system", Content: stringPointer(msg.Content)})
+			role := "system"
+			if p.chatGPTPlan {
+				// Plan usage rejects system items; developer carries the same weight.
+				role = "developer"
+			}
+			input = append(input, responsesInputItem{Type: "message", Role: role, Content: stringPointer(msg.Content)})
 		case RoleAssistant:
 			if strings.TrimSpace(msg.Content) != "" {
 				input = append(input, responsesInputItem{Type: "message", Role: "assistant", Content: stringPointer(msg.Content)})
@@ -786,11 +893,17 @@ func readAPIError(resp *http.Response) error {
 			Type    string `json:"type"`
 			Code    string `json:"code"`
 		} `json:"error"`
+		// Detail is the body of errors raised before a request reaches the
+		// model, such as ChatGPT plan usage admission.
+		Detail any `json:"detail"`
 	}
 	if err := json.Unmarshal(body, &payload); err == nil {
 		apiErr.Message = payload.Error.Message
 		apiErr.Type = payload.Error.Type
 		apiErr.Code = payload.Error.Code
+		if detail, ok := payload.Detail.(string); ok && apiErr.Message == "" {
+			apiErr.Message = detail
+		}
 	}
 	return apiErr
 }
@@ -1121,10 +1234,12 @@ type responsesStreamEvent struct {
 	Text     string              `json:"text"`
 	Message  string              `json:"message"`
 	Item     responsesOutputItem `json:"item"`
+	Code     string              `json:"code"`
 	Response struct {
 		Usage responseUsage `json:"usage"`
 		Error struct {
 			Message string `json:"message"`
+			Code    string `json:"code"`
 		} `json:"error"`
 		IncompleteDetails struct {
 			Reason string `json:"reason"`

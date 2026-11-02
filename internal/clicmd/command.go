@@ -597,3 +597,11 @@ func MaximumArgs(n int) ArgsValidator {
 		return nil
 	}
 }
+func RangeArgs(lo, hi int) ArgsValidator {
+	return func(c *Command, args []string) error {
+		if err := MinimumNArgs(lo)(c, args); err != nil {
+			return err
+		}
+		return MaximumArgs(hi)(c, args)
+	}
+}

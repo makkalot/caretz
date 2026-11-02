@@ -182,6 +182,63 @@ func enforceSessionModel(cfg config.Config, policy config.ModelPolicy, settings 
 	return enforceModelSettings(cfg, policy, settings, adapter)
 }
 
+// allowModelsForRun adds refs (--allow-model) to the workspace's model rule
+// for this run only. The rule goes into the in-memory config, so subagents,
+// goal roles and model switches in the workspace see it; nothing is saved.
+// Without a covering rule, the run rule allows exactly refs (and local
+// models), which also answers the cloud prompt for them.
+func allowModelsForRun(cfg config.Config, policy config.ModelPolicy, refs []string) (config.Config, config.ModelPolicy, error) {
+	if len(refs) == 0 {
+		return cfg, policy, nil
+	}
+	var allow []string
+	if policy.Rule != nil {
+		allow = append(allow, policy.Rule.Allow...)
+	}
+	for _, ref := range refs {
+		ref = strings.TrimSpace(ref)
+		if err := validateAllowModelSelector(cfg, ref); err != nil {
+			return cfg, policy, fmt.Errorf("--allow-model: %w", err)
+		}
+		if !slices.Contains(allow, ref) {
+			allow = append(allow, ref)
+		}
+	}
+	rule, err := config.NewWorkspaceRule(policy.Workspace, allow, cloudConsentSource)
+	if err != nil {
+		return cfg, policy, err
+	}
+	if cfg, err = cfg.WithModelRule(*rule); err != nil {
+		return cfg, policy, err
+	}
+	policy, err = cfg.PolicyForWorkspace(policy.Workspace)
+	return cfg, policy, err
+}
+
+// validateAllowModelSelector accepts a configured provider/model, a
+// provider/* for a configured provider, or *.
+func validateAllowModelSelector(cfg config.Config, ref string) error {
+	if ref == "*" {
+		return nil
+	}
+	provider, model, ok := strings.Cut(ref, "/")
+	if !ok || provider == "" || model == "" {
+		return fmt.Errorf("%q must be provider/model, provider/*, or *", ref)
+	}
+	if model == "*" {
+		if _, known := cfg.Provider[provider]; !known {
+			return fmt.Errorf("unknown provider %q; see caretz models", provider)
+		}
+		return nil
+	}
+	if _, known, err := cfg.ResolveExplicitModelRef(ref); err != nil {
+		return err
+	} else if !known {
+		return fmt.Errorf("unknown configured model %q; see caretz models", ref)
+	}
+	return nil
+}
+
 // allowModelHere saves a rule for the policy's workspace that keeps the
 // active rule's allow list and adds ref, and makes it the active rule.
 func allowModelHere(policy *config.ModelPolicy, ruleFile, ref string) (*config.ModelRule, error) {

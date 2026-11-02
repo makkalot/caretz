@@ -40,6 +40,7 @@ If `caretz` isn't found, add `~/bin` to your `PATH`; see
 - [Turn on web search](tools/web/)
 - [Give caretz your own tools](tools/custom-cli/)
 - [Teach caretz your project's rules](customization/)
+- [Use your ChatGPT plan instead of API credits](config/chatgpt/)
 - [Keep cloud models out of private folders](config/model-rules/)
 - [Run one command with sudo](sandboxing/escalation/)
 - [Embed the agent in a Go app](embedding/)

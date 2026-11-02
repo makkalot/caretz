@@ -142,6 +142,85 @@ func TestDirectoryModelStartupRefusesExplicitModel(t *testing.T) {
 	}
 }
 
+func TestAllowModelFlagAllowsForThisRunOnly(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	for _, key := range []string{"CARETZ_CONFIG_ROOT", "OPENAI_API_MODEL", "OPENAI_API_BASE_URL", "OPENAI_REASONING", "OPENAI_API_KEY"} {
+		t.Setenv(key, "")
+	}
+	cfg := modelPolicyTestConfig(workspace, "http://localhost:8000/v1")
+	cfg.ActiveModel = "local/a"
+	configPath := filepath.Join(home, ".config/caretz/config.json")
+	writeModelPolicyConfig(t, configPath, cfg)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr strings.Builder
+	rt, code := BuildRuntime(t.Context(), []string{"--workspace", workspace, "--no-model-discovery", "--model", "cloud/x", "--allow-model", "cloud/x"}, &stderr)
+	if code != 0 {
+		t.Fatalf("startup=%d %s", code, stderr.String())
+	}
+	if rt.Settings.ActiveModelRef != "cloud/x" {
+		t.Fatalf("model = %q, want cloud/x", rt.Settings.ActiveModelRef)
+	}
+	if rule := rt.ModelPolicy.Rule; rule == nil || rule.Source != cloudConsentSource || strings.Join(rule.Allow, ",") != "local/*,cloud/x" {
+		t.Fatalf("rule = %+v, want the configured allow list plus cloud/x for this run", rule)
+	}
+	// Subagents and goal roles resolve policy from the runtime's config.
+	subagentPolicy, err := rt.FileConfig.PolicyForWorkspace(workspace)
+	if err != nil || !subagentPolicy.Allows(rt.FileConfig, "cloud/x") {
+		t.Fatalf("subagent policy does not allow cloud/x: %+v %v", subagentPolicy.Rule, err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("--allow-model saved a rule:\n%s", after)
+	}
+}
+
+func TestAllowModelFlagRejectsUnknownModels(t *testing.T) {
+	cfg := modelPolicyTestConfig(t.TempDir(), "http://localhost:8000/v1")
+	policy, err := cfg.PolicyForWorkspace(cfg.ModelRules[0].Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"nope/x", "nope/*", "cloud", "/x"} {
+		if _, _, err := allowModelsForRun(cfg, policy, []string{ref}); err == nil {
+			t.Errorf("--allow-model %q accepted", ref)
+		}
+	}
+	// A configured provider's unlisted model is known, as with --model.
+	for _, ref := range []string{"cloud/x", "cloud/unlisted", "cloud/*", "*"} {
+		if _, _, err := allowModelsForRun(cfg, policy, []string{ref}); err != nil {
+			t.Errorf("--allow-model %q: %v", ref, err)
+		}
+	}
+}
+
+func TestAllowModelFlagWithoutRuleAllowsOnlyNamedModels(t *testing.T) {
+	cfg := modelPolicyTestConfig(t.TempDir(), "http://localhost:8000/v1")
+	cfg.ModelRules = nil
+	workspace := t.TempDir()
+	policy, err := cfg.PolicyForWorkspace(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, policy, err = allowModelsForRun(cfg, policy, []string{"cloud/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.Rule == nil || needsCloudConsent(cfg, policy, "cloud/x", "http://localhost:8000/v1") {
+		t.Fatalf("named model still needs the cloud prompt: %+v", policy.Rule)
+	}
+	if !policy.Allows(cfg, "cloud/x") || !policy.Allows(cfg, "local/a") {
+		t.Fatalf("run rule %+v must allow cloud/x and local models", policy.Rule)
+	}
+}
+
 func TestDirectoryModelBypassAndNoRequests(t *testing.T) {
 	for _, mode := range []string{"empty", "flag", "environment", "workspace-baseURL", "workspace-apiKey", "workspace-model", "same-endpoint"} {
 		t.Run(mode, func(t *testing.T) {

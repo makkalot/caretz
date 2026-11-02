@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,28 @@ import (
 
 	"github.com/makkalot/caretz/internal/config"
 )
+
+func TestAuthLoginNamesTheServiceAndLogoutTheProvider(t *testing.T) {
+	t.Setenv(config.CredentialsFileEnv, "")
+	t.Setenv("HOME", t.TempDir())
+	for _, args := range [][]string{{"auth", "login"}, {"auth", "logout"}, {"auth", "login", "chatgpt", "a", "b"}} {
+		var stderr strings.Builder
+		if code := Run(context.Background(), args, io.Discard, &stderr); code != 2 {
+			t.Errorf("%v: code=%d stderr=%q, want a usage error", args, code, stderr.String())
+		}
+	}
+	var stderr strings.Builder
+	if code := Run(context.Background(), []string{"auth", "login", "copilot"}, io.Discard, &stderr); code != 1 || !strings.Contains(stderr.String(), `unknown sign-in service "copilot"; available: chatgpt`) {
+		t.Fatalf("unknown service: code=%d stderr=%q", code, stderr.String())
+	}
+	stderr.Reset()
+	if code := Run(context.Background(), []string{"auth", "logout", "chatgpt"}, io.Discard, &stderr); code != 1 || !strings.Contains(stderr.String(), "chatgpt is not signed in") {
+		t.Fatalf("logout: code=%d stderr=%q", code, stderr.String())
+	}
+	if got := config.SignInCommand("chatgpt", "work"); got != "caretz auth login chatgpt work" {
+		t.Fatalf("SignInCommand = %q", got)
+	}
+}
 
 func TestAuthCommandSetListRemove(t *testing.T) {
 	t.Setenv(config.CredentialsFileEnv, "")

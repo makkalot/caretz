@@ -32,8 +32,11 @@ var localSetupPresets = []setupPreset{
 	{"local", "Custom local provider", "http://127.0.0.1:8080/v1"},
 }
 
+// hostedSetupPresets whose key names a signInServices entry sign in through
+// the browser instead of asking for a base URL and API key.
 var hostedSetupPresets = []setupPreset{
-	{"openai", "OpenAI", "https://api.openai.com/v1"}, {"openrouter", "OpenRouter", "https://openrouter.ai/api/v1"},
+	{"openai", "OpenAI", "https://api.openai.com/v1"}, {"chatgpt", "ChatGPT plan (sign in, no API key)", config.ChatGPTBaseURL},
+	{"openrouter", "OpenRouter", "https://openrouter.ai/api/v1"},
 	{"groq", "Groq", "https://api.groq.com/openai/v1"}, {"together", "Together AI", "https://api.together.xyz/v1"},
 	{"mistral", "Mistral", "https://api.mistral.ai/v1"}, {"opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1"},
 	{"custom", "Custom", "https://api.example.com/v1"},
@@ -44,12 +47,14 @@ type setupWizard struct {
 	in          io.Reader
 	out, errOut io.Writer
 	reader      *bufio.Reader
+	// signIn replaces the sign-in service's browser flow in tests.
+	signIn func(ctx context.Context, homePath, providerKey string, out, errOut io.Writer) ([]string, bool, error)
 }
 
 func runSetupCommand(ctx context.Context, args []string, in io.Reader, stdout, stderr io.Writer) int {
 	if len(args) > 0 {
 		if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-			_, _ = fmt.Fprintln(stdout, "Usage: caretz setup\n\nInteractively configure a local or hosted OpenAI-compatible provider,\nthen optionally web search keys (Tavily, Brave) and an image analysis model.")
+			_, _ = fmt.Fprintln(stdout, "Usage: caretz setup\n\nInteractively configure a local or hosted OpenAI-compatible provider, or\nsign in with a ChatGPT plan, then optionally web search keys (Tavily, Brave) and an image analysis model.")
 			return 0
 		}
 		output.Errorf(stderr, "usage: caretz setup")
@@ -103,6 +108,9 @@ func (w *setupWizard) run(path string) error {
 			return err
 		}
 		preset = hostedSetupPresets[choice]
+		if service, ok := signInServices[preset.key]; ok {
+			return w.signInProvider(path, preset.key, service)
+		}
 	}
 	for {
 		key, err := w.prompt("Provider key", preset.key)
@@ -226,11 +234,71 @@ func (w *setupWizard) run(path string) error {
 	}
 }
 
+// signInProvider adds a provider that signs in to a subscription in the
+// browser, then selects one of the plan's models.
+func (w *setupWizard) signInProvider(path, serviceName string, service signInService) error {
+	key, err := w.prompt("Provider key", serviceName)
+	if err != nil {
+		return err
+	}
+	key = strings.TrimSpace(key)
+	if err := validateProviderName(key); err != nil {
+		return err
+	}
+	signIn := service.signIn
+	if w.signIn != nil {
+		signIn = w.signIn
+	}
+	var models []string
+	for {
+		ctx, cancel := context.WithTimeout(w.ctx, chatGPTLoginTimeout)
+		models, _, err = signIn(ctx, path, key, w.out, w.errOut)
+		cancel()
+		if err == nil {
+			break
+		}
+		_, _ = fmt.Fprintf(w.errOut, "Sign-in failed: %v\n", err)
+		action, err := w.choose("Next action", []string{"Try again", "Cancel"}, 0)
+		if err != nil {
+			return err
+		}
+		if action == 1 {
+			return io.EOF
+		}
+	}
+	var modelID string
+	if len(models) > 0 {
+		choice, err := w.choose("Model", models, 0)
+		if err != nil {
+			return err
+		}
+		modelID = models[choice]
+	} else if modelID, err = w.prompt("Model ID (unverified)", ""); err != nil {
+		return err
+	}
+	isLocal := false
+	candidate := config.SetupProvider{
+		Key: key, Name: service.title, BaseURL: service.baseURL, ModelID: strings.TrimSpace(modelID),
+		Auth: serviceName, Local: &isLocal,
+	}
+	if err := w.save(path, candidate); err != nil {
+		return err
+	}
+	// LocalImage sends a provider's stored API key, which a sign-in doesn't
+	// have, so only web search is offered.
+	if err := w.optionalTools(path, candidate, nil, ""); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(w.out, "Run caretz to get started.")
+	return nil
+}
+
 // optionalTools offers web search and image analysis once the provider is
-// saved. Cancelling here skips the remaining steps but keeps the provider.
+// saved; image analysis only for a provider with an API key. Cancelling here
+// skips the remaining steps but keeps the provider.
 func (w *setupWizard) optionalTools(path string, provider config.SetupProvider, models []string, previousImageModel string) error {
 	err := w.setupWebSearch(path)
-	if err == nil {
+	if err == nil && provider.Auth == "" {
 		err = w.setupLocalImage(path, provider, models, previousImageModel)
 	}
 	if errors.Is(err, io.EOF) {

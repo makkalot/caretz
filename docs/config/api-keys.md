@@ -35,6 +35,10 @@ search/tavily  credentials.json …41c0
 Add `--config-root DIR`, or set `CARETZ_CONFIG_ROOT`, to also list the
 providers a config root defines. Their keys are stored here too.
 
+A ChatGPT subscription needs no key: `caretz auth login chatgpt` signs in
+through the browser and stores refreshing tokens here instead. See
+[Use your ChatGPT plan](chatgpt.md).
+
 A provider without a stored key, such as a local server that ignores auth,
 needs nothing more. It gets the placeholder `noset`, never your
 `OPENAI_API_KEY`. That env key only applies to endpoints that aren't a

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	caretz "github.com/makkalot/caretz"
+	"github.com/makkalot/caretz/internal/chatgptauth"
 	"github.com/makkalot/caretz/internal/clicmd"
 	"github.com/makkalot/caretz/internal/config"
 	"github.com/makkalot/caretz/internal/log"
@@ -306,12 +307,17 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	}
 	// A rule that allows nothing still admits local models; with none
 	// configured, stop before model discovery contacts a hosted provider.
-	if policy.Rule != nil && len(policy.Rule.Allow) == 0 && len(fileConfig.LocalSelectors()) == 0 {
+	if policy.Rule != nil && len(policy.Rule.Allow) == 0 && len(fileConfig.LocalSelectors()) == 0 && len(baseFlags.AllowModels) == 0 {
 		_, _, err := policy.Select(fileConfig, fileConfig.ActiveModel, nil)
 		output.Errorf(stderr, "%v", err)
 		return nil, 1
 	}
 	fileConfig = cachedProviderModels(fileConfig, config.ModelCachePath(homeConfigPath), baseFlags, stderr)
+	// After the model cache, so --allow-model can name a discovered model.
+	if fileConfig, policy, err = allowModelsForRun(fileConfig, policy, baseFlags.AllowModels); err != nil {
+		output.Errorf(stderr, "%v", err)
+		return nil, 1
+	}
 	profile = fileConfig.Operational()
 	slashcmd.ConfigureGoal(profile.Goal)
 	if profile.Plan != nil && !baseFlags.Changed["plan"] {
@@ -552,7 +558,7 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 		Tavily:             registry.TavilyAPIKey != "",
 	}))
 
-	provider := llm.NewOpenAIProviderWithOptions(runtimeConfig.APIKey, runtimeConfig.BaseURL, runtimeConfig.Model, llm.OpenAIProviderOptions{
+	provider := chatgptauth.NewProvider(runtimeConfig.APIKey, runtimeConfig.BaseURL, runtimeConfig.Model, llm.OpenAIProviderOptions{
 		RequestTimeout:        runtimeConfig.LLMTimeout,
 		DisableRequestTimeout: runtimeConfig.LLMTimeout == 0,
 		MaxAttempts:           runtimeConfig.LLMMaxAttempts,

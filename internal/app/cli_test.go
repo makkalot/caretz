@@ -96,7 +96,7 @@ func TestRootHelpGroupsEveryFlag(t *testing.T) {
 	want := map[string][]string{
 		"Session and input":           {"adapter", "incognito", "p", "prompt-file", "s"},
 		"Workspace and configuration": {"config-root", "profile", "workspace"},
-		"Model and context":           {"api-key", "base-url", "context-window", "keep-recent-tokens", "llm-max-attempts", "llm-timeout", "model", "no-model-discovery", "reasoning", "reserved-tokens", "summary-tokens"},
+		"Model and context":           {"allow-model", "api-key", "base-url", "context-window", "keep-recent-tokens", "llm-max-attempts", "llm-timeout", "model", "no-model-discovery", "reasoning", "reserved-tokens", "summary-tokens"},
 		"Agent behavior":              {"disable-tool", "no-tasks", "system-prompt", "system-prompt-file", "tasks", "tools"},
 		"Execution and sandbox":       {"allow-docker", "allow-loopback", "ask-sandbox-off", "network-allow", "permission-timeout", "plan", "read-root", "sandbox-env", "sandbox-env-file", "session-exec", "unrestricted-network", "writable-root"},
 		"Output and diagnostics":      {"output", "theme", "v", "vv"},

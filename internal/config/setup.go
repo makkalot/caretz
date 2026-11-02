@@ -20,6 +20,12 @@ type SetupProvider struct {
 	Key, Name, BaseURL, APIKey, ModelID string
 	ContextWindow                       int
 	Local                               *bool
+	// Auth is the provider's auth mode; AuthChatGPT also pins the model to
+	// the Responses protocol.
+	Auth string
+	// KeepActiveModel leaves an existing activeModel alone; the new model
+	// becomes active only when none is set.
+	KeepActiveModel bool
 }
 
 // SaveSetupProvider safely merges a setup result while preserving unrelated
@@ -60,6 +66,10 @@ func SaveSetupProvider(path string, setup SetupProvider, replace bool) error {
 	if setup.Local != nil {
 		provider["local"] = *setup.Local
 	}
+	if setup.Auth != "" {
+		provider["auth"] = setup.Auth
+		model["protocol"] = "responses"
+	}
 	providerJSON, err := json.Marshal(provider)
 	if err != nil {
 		return fmt.Errorf("encode provider: %w", err)
@@ -70,8 +80,10 @@ func SaveSetupProvider(path string, setup SetupProvider, replace bool) error {
 		return fmt.Errorf("encode providers: %w", err)
 	}
 	raw["provider"] = providersJSON
-	activeJSON, _ := json.Marshal(setup.Key + "/" + setup.ModelID)
-	raw["activeModel"] = activeJSON
+	if _, hasActive := raw["activeModel"]; !setup.KeepActiveModel || !hasActive {
+		activeJSON, _ := json.Marshal(setup.Key + "/" + setup.ModelID)
+		raw["activeModel"] = activeJSON
+	}
 	out, err := json.MarshalIndent(raw, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode config: %w", err)
