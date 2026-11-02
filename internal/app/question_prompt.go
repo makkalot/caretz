@@ -262,30 +262,47 @@ func (p *questionPicker) lines(style output.Style, width int) []string {
 				box = "[x] "
 			}
 		}
-		var label, description string
+		prefix := fmt.Sprintf("%s%d. ", box, i+1)
+		var rows []string
+		var description string
 		if i < len(q.Options) {
-			label = questionText(q.Options[i].Label)
+			label := questionText(q.Options[i].Label)
 			if q.Options[i].Recommended {
 				label += " (recommended)"
 			}
 			description = questionText(q.Options[i].Description)
+			rows = []string{fitCells(prefix+label, width-4)}
 		} else {
-			label = "Other" + output.GlyphEllipsis
-			if p.editing && i == state.cursor {
+			// The Other answer wraps under its label so long answers stay
+			// readable; while typing, the end of the answer stays in view.
+			editing := p.editing && i == state.cursor
+			label := "Other" + output.GlyphEllipsis
+			if editing {
 				label = "Other: " + state.other + "▌"
 			} else if state.other != "" {
 				label = "Other: " + state.other
 			}
+			indent := strings.Repeat(" ", ansi.VisibleWidth(prefix))
+			for j, line := range wrapInput(label, width-4-len(indent), maxOtherLines, editing) {
+				if j == 0 {
+					rows = append(rows, prefix+line)
+				} else {
+					rows = append(rows, indent+line)
+				}
+			}
 		}
-		row := fmt.Sprintf("%s%d. %s", box, i+1, label)
-		if i == state.cursor {
-			row = style.Bold(style.Prompt(fitCells(row, width-4)))
-		} else if !q.MultiSelect && state.answered && state.chosen[i] {
-			row = style.Success(fitCells(row, width-4))
-		} else {
-			row = fitCells(row, width-4)
+		for j, row := range rows {
+			if i == state.cursor {
+				row = style.Bold(style.Prompt(row))
+			} else if !q.MultiSelect && state.answered && state.chosen[i] {
+				row = style.Success(row)
+			}
+			if j == 0 {
+				lines = append(lines, "  "+marker+row)
+			} else {
+				lines = append(lines, "    "+row)
+			}
 		}
-		lines = append(lines, "  "+marker+row)
 		for _, line := range wrapCells(description, width-9) {
 			lines = append(lines, "         "+style.Muted(line))
 		}
@@ -321,7 +338,13 @@ func (p *questionPicker) summary(style output.Style, outcome questionOutcome, wi
 			parts = append(parts, answer.Other)
 		}
 		text := questionText(p.questions[i].Header) + " " + output.GlyphArrow + " " + strings.Join(parts, ", ")
-		lines = append(lines, style.Muted(output.GlyphQuestion+" ")+fitCells(text, width-2))
+		for j, line := range wrapCells(text, width-2) {
+			if j == 0 {
+				lines = append(lines, style.Muted(output.GlyphQuestion+" ")+line)
+			} else {
+				lines = append(lines, "  "+line)
+			}
+		}
 	}
 	return lines
 }
@@ -401,6 +424,51 @@ func fitCells(value string, width int) string {
 		used += w
 	}
 	return b.String() + output.GlyphEllipsis
+}
+
+// maxOtherLines caps how many lines the Other answer takes in the picker, so
+// the redrawn frame stays shorter than the terminal.
+const maxOtherLines = 6
+
+// wrapInput breaks typed text into lines of at most width cells, preferring
+// to break after a space but keeping every character so the cursor sits where
+// the user typed. Beyond maxLines it keeps the tail when tail is set and the
+// head otherwise, marking the cut with an ellipsis.
+func wrapInput(text string, width, maxLines int, tail bool) []string {
+	width = max(width, 10)
+	var lines []string
+	var line []rune
+	used := 0
+	for _, r := range text {
+		w := ansi.CellWidth(r)
+		if used+w > width {
+			cut := len(line)
+			if space := strings.LastIndexByte(string(line), ' '); space >= 0 {
+				cut = len([]rune(string(line)[:space+1]))
+			}
+			lines = append(lines, string(line[:cut]))
+			line = append([]rune(nil), line[cut:]...)
+			used = 0
+			for _, rest := range line {
+				used += ansi.CellWidth(rest)
+			}
+		}
+		line = append(line, r)
+		used += w
+	}
+	lines = append(lines, string(line))
+	if len(lines) <= maxLines {
+		return lines
+	}
+	if tail {
+		lines = lines[len(lines)-maxLines:]
+		lines[0] = output.GlyphEllipsis + string([]rune(lines[0])[1:])
+		return lines
+	}
+	lines = lines[:maxLines]
+	last := []rune(lines[maxLines-1])
+	lines[maxLines-1] = string(last[:len(last)-1]) + output.GlyphEllipsis
+	return lines
 }
 
 // wrapCells breaks text at spaces into lines of at most width cells.

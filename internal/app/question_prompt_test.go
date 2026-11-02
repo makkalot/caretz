@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/makkalot/caretz/internal/ansi"
+	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/lib/eventing"
 )
 
@@ -115,6 +116,35 @@ func TestQuestionResolutionCarriesAnswers(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Works over SSH") || !strings.Contains(out.String(), "Auth → Device code") {
 		t.Fatalf("output = %q", out.String())
+	}
+}
+
+// A long Other answer wraps under its label instead of being cut to one line.
+func TestQuestionPickerWrapsLongOther(t *testing.T) {
+	answer := strings.TrimSpace(strings.Repeat("the quick brown fox jumps ", 6))
+	picker := newQuestionPicker(pickerQuestions()[:1])
+	picker.states[0].cursor = picker.otherRow()
+	picker.editing = true
+	picker.states[0].other = answer
+	lines := picker.lines(output.NewStyle(&bytes.Buffer{}), 40)
+	var text strings.Builder
+	for _, line := range lines {
+		if ansi.VisibleWidth(line) > 40 {
+			t.Fatalf("line wider than 40 cells: %q", line)
+		}
+		text.WriteString(strings.TrimSpace(ansi.Strip(line)) + " ")
+	}
+	if !strings.Contains(text.String(), "jumps the quick brown fox jumps▌") {
+		t.Fatalf("answer end not visible: %q", lines)
+	}
+
+	got := wrapInput(strings.Repeat("ab ", 40), 10, 3, true)
+	if len(got) != 3 || !strings.HasPrefix(got[0], "…") {
+		t.Fatalf("tail wrap = %q", got)
+	}
+	got = wrapInput(strings.Repeat("ab ", 40), 10, 3, false)
+	if len(got) != 3 || !strings.HasSuffix(got[2], "…") || got[0] != "ab ab ab " {
+		t.Fatalf("head wrap = %q", got)
 	}
 }
 
