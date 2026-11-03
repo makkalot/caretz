@@ -12,13 +12,14 @@ import (
 )
 
 // questionResolution answers an AskUser request in the TUI. Escape dismisses
-// the questions and lets the turn continue; Ctrl-C stops the turn.
-func questionResolution(terminal *ansi.Terminal, request eventing.PermissionRequest) (eventing.PermissionResolution, error) {
+// the questions and lets the turn continue; Ctrl-C stops the turn. It returns
+// errPermissionWithdrawn once a non-nil withdrawn reports true.
+func questionResolution(terminal *ansi.Terminal, request eventing.PermissionRequest, withdrawn func() bool) (eventing.PermissionResolution, error) {
 	questions, err := eventing.DecodeQuestions(request)
 	if err != nil {
 		return eventing.PermissionResolution{}, err
 	}
-	answers, outcome, err := readQuestionAnswers(terminal, questions, request.ExpiresAt)
+	answers, outcome, err := readQuestionAnswers(terminal, questions, request.ExpiresAt, withdrawn)
 	if err != nil {
 		return eventing.PermissionResolution{}, err
 	}
@@ -34,6 +35,8 @@ func questionResolution(terminal *ansi.Terminal, request eventing.PermissionRequ
 		resolution.Resolver = "permission-timeout"
 	case questionsCancelled:
 		return eventing.PermissionResolution{}, context.Canceled
+	case questionsWithdrawn:
+		return eventing.PermissionResolution{}, errPermissionWithdrawn
 	}
 	return resolution, nil
 }
@@ -45,6 +48,7 @@ const (
 	questionsDismissed
 	questionsTimedOut
 	questionsCancelled
+	questionsWithdrawn // the request stopped waiting for an answer
 )
 
 // questionPicker is the state of the vertical picker: one tab per question,
@@ -330,6 +334,8 @@ func (p *questionPicker) summary(style output.Style, outcome questionOutcome, wi
 		return []string{style.Warning(output.GlyphQuestion + " no answer in time; the model will use its recommendations")}
 	case questionsCancelled:
 		return nil
+	case questionsWithdrawn:
+		return []string{style.Muted(output.GlyphQuestion + " questions no longer needed: the request stopped waiting for an answer")}
 	}
 	var lines []string
 	for i, answer := range p.answers() {
@@ -350,8 +356,9 @@ func (p *questionPicker) summary(style output.Style, outcome questionOutcome, wi
 }
 
 // readQuestionAnswers runs the picker until the user answers every question,
-// skips them, stops the turn or expiresAt passes.
-func readQuestionAnswers(terminal *ansi.Terminal, questions []eventing.Question, expiresAt time.Time) ([]eventing.QuestionAnswer, questionOutcome, error) {
+// skips them, stops the turn, expiresAt passes or a non-nil withdrawn reports
+// that the questions no longer need an answer.
+func readQuestionAnswers(terminal *ansi.Terminal, questions []eventing.Question, expiresAt time.Time, withdrawn func() bool) ([]eventing.QuestionAnswer, questionOutcome, error) {
 	out := terminal.Writer()
 	style := output.NewStyle(out)
 	picker := newQuestionPicker(questions)
@@ -379,6 +386,9 @@ func readQuestionAnswers(terminal *ansi.Terminal, questions []eventing.Question,
 		return nil, outcome, nil
 	}
 	for {
+		if withdrawn != nil && withdrawn() {
+			return finish(questionsWithdrawn)
+		}
 		wait := 50 * time.Millisecond
 		if !expiresAt.IsZero() {
 			remaining := time.Until(expiresAt)

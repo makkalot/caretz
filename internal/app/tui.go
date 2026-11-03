@@ -608,7 +608,7 @@ func promptPermission(terminal *ansi.Terminal, request eventing.PermissionReques
 		return cloudConsentResolution(terminal, request)
 	}
 	if request.Capability == eventing.PermissionCapabilityQuestion {
-		return questionResolution(terminal, request)
+		return questionResolution(terminal, request, withdrawn)
 	}
 	decision, err := readPermissionDecision(terminal, request, withdrawn)
 	return eventing.PermissionResolution{RequestID: request.RequestID, Decision: decision, Resolver: "tui"}, err

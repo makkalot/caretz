@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,7 +78,7 @@ func TestReadQuestionAnswers(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var out bytes.Buffer
 			terminal := ansi.NewTerminal(strings.NewReader(test.input), &out)
-			answers, outcome, err := readQuestionAnswers(terminal, pickerQuestions(), time.Time{})
+			answers, outcome, err := readQuestionAnswers(terminal, pickerQuestions(), time.Time{}, nil)
 			if err != nil {
 				t.Fatalf("err = %v, output = %q", err, out.String())
 			}
@@ -91,14 +93,48 @@ func TestQuestionResolutionEscapeSkipsAndCtrlCStops(t *testing.T) {
 	request := eventing.PermissionRequest{RequestID: "q", Capability: eventing.PermissionCapabilityQuestion, Details: eventing.QuestionDetails(pickerQuestions())}
 
 	terminal := ansi.NewTerminal(strings.NewReader("\x1b "), &bytes.Buffer{})
-	resolution, err := questionResolution(terminal, request)
+	resolution, err := questionResolution(terminal, request, nil)
 	if err != nil || resolution.Decision != eventing.PermissionDecisionDeny || resolution.RequestID != "q" {
 		t.Fatalf("escape: resolution = %+v, err = %v", resolution, err)
 	}
 
 	terminal = ansi.NewTerminal(strings.NewReader("\x03"), &bytes.Buffer{})
-	if _, err := questionResolution(terminal, request); !errors.Is(err, context.Canceled) {
+	if _, err := questionResolution(terminal, request, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ctrl-c: err = %v", err)
+	}
+}
+
+// A question request can be withdrawn while the picker is up, such as when
+// the subagent that asked is stopped; the picker is then dismissed instead of
+// waiting for answers nobody reads.
+func TestQuestionResolutionDismissesWithdrawnRequest(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	request := eventing.PermissionRequest{RequestID: "q", Capability: eventing.PermissionCapabilityQuestion, Details: eventing.QuestionDetails(pickerQuestions())}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+	var out bytes.Buffer
+	terminal := ansi.NewTerminal(r, &out)
+	var checks atomic.Int32
+	withdrawn := func() bool { return checks.Add(1) > 2 }
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := questionResolution(terminal, request, withdrawn)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errPermissionWithdrawn) {
+			t.Fatalf("err = %v, want errPermissionWithdrawn", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("picker still waiting for input after the request was withdrawn")
+	}
+	if !strings.Contains(out.String(), "no longer needed") {
+		t.Fatalf("withdrawal notice missing: %q", out.String())
 	}
 }
 
@@ -106,7 +142,7 @@ func TestQuestionResolutionCarriesAnswers(t *testing.T) {
 	request := eventing.PermissionRequest{RequestID: "q", Capability: eventing.PermissionCapabilityQuestion, Details: eventing.QuestionDetails(pickerQuestions()[:1])}
 	var out bytes.Buffer
 	terminal := ansi.NewTerminal(strings.NewReader(keyLeft+keyEnter), &out)
-	resolution, err := questionResolution(terminal, request)
+	resolution, err := questionResolution(terminal, request, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +190,7 @@ func TestQuestionPickerStripsEscapes(t *testing.T) {
 	questions[0].Question = "Pick\x1b[2J one?"
 	var out bytes.Buffer
 	terminal := ansi.NewTerminal(strings.NewReader(keyEnter), &out)
-	if _, _, err := readQuestionAnswers(terminal, questions, time.Time{}); err != nil {
+	if _, _, err := readQuestionAnswers(terminal, questions, time.Time{}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(out.String(), "\x1b[2J") {
