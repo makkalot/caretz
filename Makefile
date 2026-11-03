@@ -27,7 +27,7 @@ VFLAG := $(if $(V),-$(V),)
 .PHONY: help setup tidy ci doccheck build build-bench run test test-bench test-bench-daily fmt vet golangci-lint lint site-build site-serve clean install submit \
 	worktree worktree-from-branch worktree-from-remote \
 	build-linux-amd64 build-linux-arm64 build-jetson build-all run-linux test-linux test-docker \
-	test-sandbox-linux test-sandbox-darwin test-skills-e2e test-compaction-e2e
+	test-sandbox-linux test-sandbox-darwin test-e2e test-e2e-linux e2e-features test-skills-e2e test-compaction-e2e
 
 ## help: Show this help message (default)
 help:
@@ -192,6 +192,27 @@ test-sandbox-darwin:
 
 ## test-docker: Alias for test-sandbox-linux
 test-docker: test-sandbox-linux
+
+## test-e2e: Run the real binary against a scripted fake LLM server, natively
+test-e2e:
+	go test -tags e2e ./e2e/... -count=1 -v
+
+## e2e-features: Regenerate e2e/features/*.feature from the Go story tests
+e2e-features:
+	CARETZ_E2E_UPDATE_FEATURES=1 go test -tags e2e ./e2e/ -count=1
+
+## test-e2e-linux: Run the fake-LLM e2e suite with the Linux sandbox in a privileged disposable container
+# Same unprivileged-user setup as test-sandbox-linux, so bubblewrap runs as it does on a Linux host.
+test-e2e-linux:
+	docker run --privileged --rm \
+		-v $(CURDIR):/workspace \
+		-w /workspace \
+		$(SANDBOX_TEST_IMAGE) \
+		sh -c 'apt-get update -qq >/dev/null && apt-get install -y -qq bubblewrap curl git >/dev/null && \
+			go mod download && chmod -R a+rX "$$(go env GOMODCACHE)" && \
+			(getent passwd 1000 >/dev/null || useradd -M -u 1000 -s /bin/sh caretz-test) && \
+			setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp GOCACHE=/tmp/gocache GOFLAGS=-buildvcs=false \
+			go test -tags e2e ./e2e/... -count=1 -v'
 
 ## test-skills-e2e: Run end-to-end skills validation
 test-skills-e2e: build

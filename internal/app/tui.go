@@ -532,7 +532,17 @@ func runInteractiveRawEventLoop(terminal *ansi.Terminal, permissionEvents <-chan
 			if lifecycle.blocked != nil {
 				lifecycle.blocked(request)
 			}
-			resolution, promptErr := promptPermission(terminal, request, prompts)
+			// A request can be withdrawn while its prompt is up, such as when
+			// the proxy connection that asked gives up, so the prompt is
+			// dismissed instead of lingering above the agent's later output.
+			withdrawn := func() bool { return lifecycle.pending != nil && !lifecycle.pending(request.RequestID) }
+			resolution, promptErr := promptPermission(terminal, request, prompts, withdrawn)
+			if errors.Is(promptErr, errPermissionWithdrawn) {
+				if lifecycle.working != nil {
+					lifecycle.working()
+				}
+				continue
+			}
 			if errors.Is(promptErr, context.Canceled) {
 				cancel()
 				continue
@@ -575,9 +585,14 @@ func runInteractiveRawEventLoop(terminal *ansi.Terminal, permissionEvents <-chan
 	}
 }
 
+// errPermissionWithdrawn reports that a permission request stopped being
+// pending before the user answered its prompt.
+var errPermissionWithdrawn = errors.New("permission request withdrawn")
+
 // promptPermission asks the user to answer request with the embedder's prompt
-// for its capability, or the built-in one.
-func promptPermission(terminal *ansi.Terminal, request eventing.PermissionRequest, prompts map[string]slashcmd.PermissionPrompt) (eventing.PermissionResolution, error) {
+// for its capability, or the built-in one. The built-in prompt returns
+// errPermissionWithdrawn once withdrawn reports true.
+func promptPermission(terminal *ansi.Terminal, request eventing.PermissionRequest, prompts map[string]slashcmd.PermissionPrompt, withdrawn func() bool) (eventing.PermissionResolution, error) {
 	if prompt := prompts[request.Capability]; prompt != nil {
 		resolution, err := prompt(terminal, request)
 		resolution.RequestID = request.RequestID
@@ -586,7 +601,7 @@ func promptPermission(terminal *ansi.Terminal, request eventing.PermissionReques
 	if request.Capability == cloudModelCapability || request.Capability == modelOverrideCapability {
 		return cloudConsentResolution(terminal, request)
 	}
-	decision, err := readPermissionDecision(terminal, request)
+	decision, err := readPermissionDecision(terminal, request, withdrawn)
 	return eventing.PermissionResolution{RequestID: request.RequestID, Decision: decision, Resolver: "tui"}, err
 }
 
@@ -634,7 +649,7 @@ func runOnTerminal(terminal *ansi.Terminal, run foregroundRun) foregroundResult 
 	return foregroundResult{stdout, stderr, runErr}
 }
 
-func readPermissionDecision(terminal *ansi.Terminal, request eventing.PermissionRequest) (string, error) {
+func readPermissionDecision(terminal *ansi.Terminal, request eventing.PermissionRequest, withdrawn func() bool) (string, error) {
 	out := terminal.Writer()
 	style := output.NewStyle(out)
 	sandboxOff := request.Capability == tools.PermissionSandboxOff
@@ -676,12 +691,16 @@ func readPermissionDecision(terminal *ansi.Terminal, request eventing.Permission
 	}
 	choices = append(choices, buttonChoice{label: "Deny", key: 'n', danger: true})
 	decisions = append(decisions, eventing.PermissionDecisionDeny)
-	choice, err := readButtonChoice(terminal, choices, len(choices)-1, request.ExpiresAt, "Permission timed out; denied.")
+	choice, err := readButtonChoice(terminal, choices, len(choices)-1, request.ExpiresAt, "Permission timed out; denied.", withdrawn)
 	if err != nil {
 		return "", err
 	}
-	if choice == buttonCancelled {
+	switch choice {
+	case buttonCancelled:
 		return "", context.Canceled
+	case buttonWithdrawn:
+		_, _ = fmt.Fprintln(out, "  "+style.Muted("No longer needed: the request stopped waiting for an answer, so nothing was allowed."))
+		return "", errPermissionWithdrawn
 	}
 	return decisions[choice], nil
 }
@@ -693,13 +712,19 @@ type buttonChoice struct {
 	danger bool // rendered red when selected
 }
 
-// buttonCancelled is returned by readButtonChoice for Escape and Ctrl-C.
-const buttonCancelled = -1
+const (
+	// buttonCancelled is returned by readButtonChoice for Escape and Ctrl-C.
+	buttonCancelled = -1
+	// buttonWithdrawn is returned by readButtonChoice once withdrawn reports
+	// true.
+	buttonWithdrawn = -2
+)
 
 // readButtonChoice lets the user pick a choice with the arrow keys, Tab,
-// Enter or a shortcut. It returns buttonCancelled for Escape or Ctrl-C, and
-// the selected default when expiresAt passes.
-func readButtonChoice(terminal *ansi.Terminal, choices []buttonChoice, selected int, expiresAt time.Time, timeoutMessage string) (int, error) {
+// Enter or a shortcut. It returns buttonCancelled for Escape or Ctrl-C, the
+// selected default when expiresAt passes, and buttonWithdrawn when a non-nil
+// withdrawn reports that the question no longer needs an answer.
+func readButtonChoice(terminal *ansi.Terminal, choices []buttonChoice, selected int, expiresAt time.Time, timeoutMessage string, withdrawn func() bool) (int, error) {
 	out := terminal.Writer()
 	style := output.NewStyle(out)
 	fallback := selected
@@ -724,6 +749,10 @@ func readButtonChoice(terminal *ansi.Terminal, choices []buttonChoice, selected 
 	}
 	render()
 	for {
+		if withdrawn != nil && withdrawn() {
+			_, _ = fmt.Fprintln(out)
+			return buttonWithdrawn, nil
+		}
 		wait := 50 * time.Millisecond
 		if !expiresAt.IsZero() {
 			remaining := time.Until(expiresAt)

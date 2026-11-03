@@ -88,7 +88,7 @@ func (r *Registry) handleBashToolCall(ctx context.Context, bashTool llm.ToolCall
 		}
 		var blocked *sandbox.NetworkBlockedError
 		if errors.As(err, &blocked) {
-			return llm.Message{}, &PermissionError{Capability: PermissionNetwork, Target: blocked.Target, Reason: "sandbox network policy blocked destination", Command: command, MayHaveRun: true}
+			return llm.Message{}, networkBlocked(bashTool.ID, command, stdout, stderr, blocked)
 		}
 		var failed llm.Message
 		if stderr != "" {
@@ -174,6 +174,23 @@ func (r *Registry) sandboxOffEscalation(cwd, command, stdout, stderr string, bac
 	}
 	r.logInfo("Bash tool sandbox refusal, asking the user to rerun outside the sandbox: %s", strings.Join(blocked, "; "))
 	return &PermissionError{Capability: PermissionSandboxOff, Target: command, Reason: reason, Command: command, MayHaveRun: true, Fallback: &result}
+}
+
+// networkBlocked asks the user to approve the destination the sandbox
+// blocked. When the user declines or cannot be asked, as in prompt mode or a
+// subagent, the model still sees the command's output and which destination
+// was blocked, instead of only "permission approval unavailable".
+func networkBlocked(toolCallID, command, stdout, stderr string, blocked *sandbox.NetworkBlockedError) *PermissionError {
+	content := stdout
+	if stderr != "" {
+		content += "sandbox error: " + stderr
+	}
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	content += fmt.Sprintf("[sandbox blocked network access to %s]", blocked.Target)
+	result := llm.Message{Role: llm.RoleTool, ToolCallID: toolCallID, Content: TruncateBashOutput(content, MaxBashOutputBytes)}
+	return &PermissionError{Capability: PermissionNetwork, Target: blocked.Target, Reason: "sandbox network policy blocked destination", Command: command, MayHaveRun: true, Fallback: &result}
 }
 
 // runUnsandboxedBash reruns one user-approved command directly on the host.

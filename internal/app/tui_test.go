@@ -40,7 +40,7 @@ func TestReadPermissionDecisionDefaultsToDenyAndAcceptsShortcut(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
 			terminal := ansi.NewTerminal(strings.NewReader(test.input), &output)
-			decision, err := readPermissionDecision(terminal, request)
+			decision, err := readPermissionDecision(terminal, request, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -54,13 +54,46 @@ func TestReadPermissionDecisionDefaultsToDenyAndAcceptsShortcut(t *testing.T) {
 	}
 }
 
+// A proxied network request can give up while its prompt is up; the prompt
+// is then dismissed instead of waiting for a key that answers nothing.
+func TestReadPermissionDecisionDismissesWithdrawnRequest(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	request := eventing.PermissionRequest{ToolName: "Bash", Capability: tools.PermissionNetwork, Target: "tcp://127.0.0.1:8092", MayHaveRun: true}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+	var output bytes.Buffer
+	terminal := ansi.NewTerminal(r, &output)
+	var checks atomic.Int32
+	withdrawn := func() bool { return checks.Add(1) > 2 }
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := readPermissionDecision(terminal, request, withdrawn)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, errPermissionWithdrawn) {
+			t.Fatalf("err = %v, want errPermissionWithdrawn", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("prompt still waiting for input after the request was withdrawn")
+	}
+	if !strings.Contains(output.String(), "No longer needed") {
+		t.Fatalf("withdrawal notice missing: %q", output.String())
+	}
+}
+
 // A request that releases content shows it before the user decides, and one
 // that can't be granted for the session doesn't offer that choice.
 func TestReadPermissionDecisionShowsPreviewAndHonorsNoSessionGrant(t *testing.T) {
 	request := eventing.PermissionRequest{ToolName: "ask_expert", Capability: "custom_send", Target: "expert", Preview: "line one\n\x1b[2Kline two", NoSessionGrant: true}
 	var output bytes.Buffer
 	terminal := ansi.NewTerminal(strings.NewReader("s\x1b[D\n"), &output)
-	decision, err := readPermissionDecision(terminal, request)
+	decision, err := readPermissionDecision(terminal, request, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +116,7 @@ func TestSandboxOffPromptRowFitsNarrowTerminals(t *testing.T) {
 	request := eventing.PermissionRequest{ToolName: "Bash", Capability: tools.PermissionSandboxOff, Target: "sudo true", Command: "sudo true", Reason: "sandbox blocked: os sudo cannot gain privileges inside the sandbox", MayHaveRun: true}
 	var output bytes.Buffer
 	terminal := ansi.NewTerminal(strings.NewReader("\t\t\t\n"), &output)
-	if _, err := readPermissionDecision(terminal, request); err != nil {
+	if _, err := readPermissionDecision(terminal, request, nil); err != nil {
 		t.Fatal(err)
 	}
 	ansiCodes := regexp.MustCompile(`\x1b\[[0-9;?]*[a-zA-Z]`)
@@ -773,7 +806,7 @@ func TestPromptPermissionUsesRegisteredPrompt(t *testing.T) {
 		},
 	}
 
-	resolution, err := promptPermission(terminal, eventing.PermissionRequest{RequestID: "r1", Capability: "custom_send", Preview: "payload"}, prompts)
+	resolution, err := promptPermission(terminal, eventing.PermissionRequest{RequestID: "r1", Capability: "custom_send", Preview: "payload"}, prompts, nil)
 
 	if err != nil {
 		t.Fatalf("promptPermission() error = %v", err)

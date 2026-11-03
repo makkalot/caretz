@@ -58,7 +58,7 @@ func (r *Registry) runSessionBash(ctx context.Context, toolCall llm.ToolCall, cw
 		}
 		var blocked *sandbox.NetworkBlockedError
 		if errors.As(runErr, &blocked) {
-			return llm.Message{}, &PermissionError{Capability: PermissionNetwork, Target: blocked.Target, Reason: "sandbox network policy blocked destination", Command: command, MayHaveRun: true}
+			return llm.Message{}, networkBlocked(toolCall.ID, command, stdout, stderr, blocked)
 		}
 		failed := llm.Message{Role: llm.RoleTool, Content: TruncateBashOutput(stdout+fmt.Sprintf("error: %v", runErr), MaxBashOutputBytes), ToolCallID: toolCall.ID}
 		if stderr != "" {

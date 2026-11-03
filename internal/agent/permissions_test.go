@@ -504,6 +504,48 @@ func TestSandboxOffAllowSessionForHostServiceCoversOnlyThatCommand(t *testing.T)
 	}
 }
 
+// Without a way to ask, a blocked network destination still returns the
+// command's output and names the destination, instead of "permission approval
+// unavailable".
+func TestNetworkBlockedWithoutRequesterKeepsOutput(t *testing.T) {
+	workspace := t.TempDir()
+	arguments, _ := json.Marshal(map[string]any{"command": "curl docs; curl tracker"})
+	call := llm.ToolCall{ID: "1", Name: "Bash", Arguments: string(arguments)}
+	session, err := NewAgentSession("test", "network-blocked-headless", SessionParams{
+		InMemorySessionStore: true,
+		WorkspaceDir:         workspace,
+		Provider: &mockProvider{responses: []llm.Response{
+			{ToolCalls: []llm.ToolCall{call}, Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call}}},
+			{Content: "done", Message: llm.Message{Role: llm.RoleAssistant, Content: "done"}},
+		}},
+		ToolRegistry: &tools.Registry{WorkspaceDir: workspace, RunSandboxedOptions: func(context.Context, string, string, sandbox.RunOptions) (string, string, error) {
+			return "the docs", "", &sandbox.NetworkBlockedError{Target: "tracker.test:80"}
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = session.Close() }()
+	if _, err := session.Call(context.Background(), "read the docs"); err != nil {
+		t.Fatal(err)
+	}
+	contextEvents, err := session.GetContextEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range contextEvents {
+		var payload eventing.LLMToolCallResult
+		if event.EventType == eventing.LLMToolCallResultCreated && json.Unmarshal([]byte(event.Payload), &payload) == nil {
+			want := "the docs\n[sandbox blocked network access to tracker.test:80]"
+			if payload.Error != "" || payload.Message.Content != want {
+				t.Fatalf("result = %+v, want content %q", payload, want)
+			}
+			return
+		}
+	}
+	t.Fatal("no tool result")
+}
+
 // Without a way to ask, as in prompt mode or a subagent, a refusal keeps the
 // command's ordinary result instead of "permission approval unavailable".
 func TestSandboxOffWithoutRequesterKeepsSandboxResult(t *testing.T) {
