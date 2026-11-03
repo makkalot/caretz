@@ -104,11 +104,17 @@ func (a *AgentLoop) loopGuardHooks() *loopGuardHooks {
 	return a.loopGuard
 }
 
-// newTurnLoopGuard starts a guard for one turn, or nil when it is off.
+// newTurnLoopGuard starts a guard for one turn, or nil when it is off or
+// limited to other models. The model is checked per turn, so /model switches
+// and subagents on their own models are covered.
 // messages is the turn's request context, ending with its new message.
 func (a *AgentLoop) newTurnLoopGuard(messages []llm.Message, summary bool) *turnLoopGuard {
 	hooks := a.loopGuardHooks()
 	if hooks == nil || summary || len(messages) == 0 {
+		return nil
+	}
+	if provider := a.currentProvider(); provider != nil && !hooks.cfg.AppliesTo(provider.GetModel(), provider.GetBaseURL()) {
+		a.logger.Debug("loop guard: off for model %s (not in loopGuard.models)", provider.GetModel())
 		return nil
 	}
 	guard := loopguard.New(hooks.cfg, messages[len(messages)-1].Content)

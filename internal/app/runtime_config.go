@@ -1079,6 +1079,9 @@ func resolveLoopGuard(profile config.LoopGuard, flags loopGuardFlags, getenv fun
 	if cfg.JudgeReasoning != "" && cfg.JudgeModel == "" {
 		return loopguard.Config{}, fmt.Errorf("--loop-guard-reasoning needs a judge model; add --loop-guard-model")
 	}
+	for _, pattern := range profile.Models {
+		cfg.Models = append(cfg.Models, strings.TrimSpace(pattern))
+	}
 	return cfg, nil
 }
 

@@ -136,6 +136,9 @@ type LoopGuard struct {
 	JudgeTimeout Duration `json:"judgeTimeout"`
 	// Judge picks the judge's model; unset uses the session's current model.
 	Judge *GoalRole `json:"judge"`
+	// Models limits the guard to sessions on these provider/model refs
+	// (globs allowed); unset or empty guards every model.
+	Models []string `json:"models"`
 }
 
 // Schedules picks the model, reasoning and context limits of scheduled runs.
@@ -1148,6 +1151,9 @@ func mergeLoopGuard(base, override LoopGuard) LoopGuard {
 	if override.Judge != nil {
 		base.Judge = override.Judge
 	}
+	if override.Models != nil {
+		base.Models = override.Models
+	}
 	return base
 }
 
@@ -1167,7 +1173,46 @@ func validateLoopGuard(guard LoopGuard, profile string) error {
 	if guard.Judge != nil && strings.TrimSpace(guard.Judge.Reasoning) != "" && strings.TrimSpace(guard.Judge.Model) == "" {
 		return fmt.Errorf("config profiles.%s.loopGuard.judge.reasoning requires judge.model", profile)
 	}
+	for _, pattern := range guard.Models {
+		if err := loopguard.ValidateModelPattern(pattern); err != nil {
+			return fmt.Errorf("config profiles.%s.loopGuard.models: %w", profile, err)
+		}
+	}
 	return nil
+}
+
+// ModelRefs returns the provider/model refs that name model served at
+// baseURL: providerKey/model for each provider at that URL, plus any
+// configured model key that aliases the same API model ID. A running
+// provider knows only its model ID and URL, so settings written as refs
+// match through this.
+func (c Config) ModelRefs(model, baseURL string) []string {
+	model = strings.TrimSpace(model)
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if model == "" {
+		return nil
+	}
+	var refs []string
+	for providerKey, provider := range c.Provider {
+		providerURL := ""
+		if provider.Options.BaseURL != nil {
+			providerURL = *provider.Options.BaseURL
+		}
+		if provider.Auth == AuthChatGPT {
+			providerURL = ChatGPTBaseURL
+		}
+		if strings.TrimRight(strings.TrimSpace(providerURL), "/") != baseURL {
+			continue
+		}
+		refs = append(refs, providerKey+"/"+model)
+		for modelKey, configured := range provider.Models {
+			if modelKey != model && configured.Model == model {
+				refs = append(refs, providerKey+"/"+modelKey)
+			}
+		}
+	}
+	sort.Strings(refs)
+	return refs
 }
 
 func validateSchedules(schedules *Schedules, profile string) error {

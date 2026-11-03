@@ -465,15 +465,29 @@ func TestLoadLoopGuardMergesFieldsAcrossLayers(t *testing.T) {
 	homePath := filepath.Join(tmp, "home.json")
 	projectPath := filepath.Join(tmp, "project.json")
 	writeFile(t, homePath, `{"profiles":{"general":{"loopGuard":{"mode":"shadow","judgeTimeout":"20s","judge":{"model":"local/big"}}}}}`)
-	writeFile(t, projectPath, `{"profiles":{"general":{"loopGuard":{"mode":"active","repeatThreshold":4}}}}`)
+	writeFile(t, projectPath, `{"profiles":{"general":{"loopGuard":{"mode":"active","repeatThreshold":4,"models":["strata/*"]}}}}`)
 
 	cfg, err := Load(homePath, projectPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	g := cfg.Operational().LoopGuard
-	if g.Mode != "active" || g.RepeatThreshold == nil || *g.RepeatThreshold != 4 || g.JudgeTimeout.Duration != 20*time.Second || g.Judge == nil || g.Judge.Model != "local/big" {
+	if g.Mode != "active" || g.RepeatThreshold == nil || *g.RepeatThreshold != 4 || g.JudgeTimeout.Duration != 20*time.Second || g.Judge == nil || g.Judge.Model != "local/big" || fmt.Sprint(g.Models) != "[strata/*]" {
 		t.Fatalf("LoopGuard = %#v", g)
+	}
+}
+
+func TestModelRefsNamesRunningModel(t *testing.T) {
+	strata, other := "http://strata:8080/v1/", "http://other/v1"
+	cfg := Config{Provider: map[string]Provider{
+		"strata": {Options: ProviderOptions{BaseURL: &strata}, Models: map[string]Model{"next": {Model: "qwen-next-q3"}}},
+		"other":  {Options: ProviderOptions{BaseURL: &other}},
+	}}
+	if got := fmt.Sprint(cfg.ModelRefs("qwen-next-q3", "http://strata:8080/v1")); got != "[strata/next strata/qwen-next-q3]" {
+		t.Fatalf("ModelRefs = %s", got)
+	}
+	if got := cfg.ModelRefs("qwen-next-q3", "http://elsewhere"); len(got) != 0 {
+		t.Fatalf("ModelRefs(unknown URL) = %v", got)
 	}
 }
 
@@ -484,6 +498,8 @@ func TestLoadRejectsInvalidLoopGuard(t *testing.T) {
 		`{"judgeTimeout":"0s"}`:          "loopGuard.judgeTimeout must be positive",
 		`{"checkEvery":-1}`:              "loopGuard.checkEvery must be >= 0",
 		`{"judge":{"reasoning":"high"}}`: "loopGuard.judge.reasoning requires judge.model",
+		`{"models":["strata/[qwen"]}`:    "loopGuard.models",
+		`{"models":[""]}`:                "loopGuard.models",
 	}
 	for guard, want := range tests {
 		homePath := filepath.Join(t.TempDir(), "home.json")

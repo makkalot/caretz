@@ -257,3 +257,34 @@ func TestParseMode(t *testing.T) {
 		t.Errorf("ParseMode(on) should fail")
 	}
 }
+
+func TestAppliesTo(t *testing.T) {
+	refs := func(model, baseURL string) []string {
+		if baseURL == "http://strata" {
+			return []string{"strata/" + model, "strata/next"}
+		}
+		return nil
+	}
+	tests := []struct {
+		models         []string
+		model, baseURL string
+		want           bool
+	}{
+		{nil, "anything", "http://x", true},
+		{[]string{"strata/*"}, "qwen-next-q3", "http://strata", true},
+		{[]string{"strata/next"}, "qwen-next-q3", "http://strata", true}, // configured alias
+		{[]string{"strata/*"}, "qwen-next-q3", "http://other", false},
+		{[]string{"*/qwen*next*"}, "qwen-next-q3", "http://strata", true},
+		{[]string{"qwen-next-*"}, "qwen-next-q3", "http://unknown", true}, // bare model ID
+		{[]string{"aqua/*", "sting/*"}, "qwen-next-q3", "http://strata", false},
+	}
+	for _, tt := range tests {
+		cfg := Config{Mode: ModeActive, Models: tt.models, ModelRefs: refs}
+		if got := cfg.AppliesTo(tt.model, tt.baseURL); got != tt.want {
+			t.Errorf("AppliesTo(%v, %s @ %s) = %v, want %v", tt.models, tt.model, tt.baseURL, got, tt.want)
+		}
+	}
+	if err := ValidateModelPattern("strata/[qwen"); err == nil {
+		t.Errorf("ValidateModelPattern(bad glob) = nil")
+	}
+}

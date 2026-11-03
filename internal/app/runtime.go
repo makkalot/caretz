@@ -426,6 +426,7 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 		output.Errorf(stderr, "%v", err)
 		return nil, 1
 	}
+	loopGuard.ModelRefs = fileConfig.ModelRefs
 
 	discoveredSkills, err := skills.DiscoverSkills(skillDirs, logger)
 	if err != nil {

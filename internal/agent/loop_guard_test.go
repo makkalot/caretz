@@ -380,3 +380,28 @@ func TestLoopGuardInheritedByChildSessions(t *testing.T) {
 		t.Fatalf("child loop guard = %+v", got)
 	}
 }
+
+func TestLoopGuardOnlyWatchesListedModels(t *testing.T) {
+	refs := func(model, baseURL string) []string {
+		if baseURL != "http://mock" {
+			return nil
+		}
+		return []string{"mock/" + model}
+	}
+	for models, wantJudged := range map[string]bool{
+		"mock/*":      true,
+		"*/loop-*":    true,
+		"other/*":     false,
+		"loop-guard*": true, // the bare model ID matches too
+	} {
+		provider := &loopGuardProvider{steps: 5, judgeReply: stuckVerdict}
+		session := newLoopGuardSession(t, filepath.Join(t.TempDir(), "sessions"), provider, []string{"undefined: Foo"})
+		session.SetLoopGuard(loopguard.Config{Mode: loopguard.ModeActive, Models: []string{models}, ModelRefs: refs})
+		if _, err := session.Call(context.Background(), "make the tests pass"); err != nil {
+			t.Fatalf("Call() error = %v", err)
+		}
+		if judged := len(provider.judgeCalls) > 0; judged != wantJudged {
+			t.Fatalf("models %q: judged = %v, want %v", models, judged, wantJudged)
+		}
+	}
+}

@@ -8,6 +8,7 @@ package loopguard
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -71,9 +72,48 @@ type Config struct {
 	// session's current model.
 	JudgeModel     string
 	JudgeReasoning string
+	// Models limits the guard to sessions running one of these models,
+	// written as provider/model refs with path.Match globs ("strata/*",
+	// "*/qwen*next*"); empty guards every model.
+	Models []string
+	// ModelRefs names a running model, given only its API model ID and base
+	// URL, by its config refs, so Models can be written as refs. Nil, or no
+	// refs, matches Models against the bare model ID.
+	ModelRefs func(model, baseURL string) []string
 }
 
 func (c Config) Enabled() bool { return c.Mode == ModeShadow || c.Mode == ModeActive }
+
+// AppliesTo reports whether the guard watches a session running model at
+// baseURL.
+func (c Config) AppliesTo(model, baseURL string) bool {
+	if len(c.Models) == 0 {
+		return true
+	}
+	names := []string{model}
+	if c.ModelRefs != nil {
+		names = append(names, c.ModelRefs(model, baseURL)...)
+	}
+	for _, pattern := range c.Models {
+		for _, name := range names {
+			if ok, _ := path.Match(pattern, name); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ValidateModelPattern reports a malformed Models entry.
+func ValidateModelPattern(pattern string) error {
+	if strings.TrimSpace(pattern) == "" {
+		return fmt.Errorf("empty model pattern")
+	}
+	if _, err := path.Match(pattern, ""); err != nil {
+		return fmt.Errorf("model pattern %q: %w", pattern, err)
+	}
+	return nil
+}
 
 func (c Config) WithDefaults() Config {
 	if c.RepeatThreshold <= 1 {

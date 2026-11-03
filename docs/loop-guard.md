@@ -83,6 +83,32 @@ model fails right away. `CARETZ_LOOP_GUARD` and
 `--loop-guard` override the mode (`off`, `shadow` or `active`). The guard is
 off by default.
 
+## Only Guard the Models That Loop
+
+Strong models rarely get stuck, so you may only want the judge watching the
+small or overthinking ones. List them in `models` as `provider/model` refs,
+with `*` globs:
+
+```json
+{
+  "profiles": {
+    "general": {
+      "loopGuard": {
+        "mode": "active",
+        "models": ["strata/*", "*/qwen*next*"],
+        "judge": {"model": "chatgpt/gpt-6.1-sol"}
+      }
+    }
+  }
+}
+```
+
+The list is checked at the start of every turn against the model the session
+is on right then, so it follows `/model` switches, and a subagent on its own
+model gets its own answer. A pattern also matches the bare model ID, which
+covers ad hoc `--base-url` endpoints. Leave `models` out to guard every
+model. `--loop-guard` changes the mode but keeps the list.
+
 ## How It Decides
 
 Checking each tool result is cheap and makes no model calls. The guard
