@@ -563,13 +563,14 @@ type LLMAgentMessage struct {
 	CumulativeTotal         int64       `json:"cumulative_total"`
 	ReasoningSummary        string      `json:"reasoning_summary,omitempty"`
 	TokenEstimateMultiplier float64     `json:"token_estimate_multiplier,omitempty"`
+	Speed                   llm.Speed   `json:"speed,omitzero"`
 }
 
 func NewLLMAgentMessage(originatorID string, parentOriginatorID string, parentOriginatorVersion uint64, msg llm.Message, usage llm.Usage, cumulativeTotal int64) *types.Event {
-	return NewLLMAgentMessageWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, msg, usage, cumulativeTotal, "")
+	return NewLLMAgentMessageWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, msg, usage, cumulativeTotal, "", llm.Speed{})
 }
 
-func NewLLMAgentMessageWithReasoning(originatorID string, parentOriginatorID string, parentOriginatorVersion uint64, msg llm.Message, usage llm.Usage, cumulativeTotal int64, reasoningSummary string, tokenEstimateMultiplier ...float64) *types.Event {
+func NewLLMAgentMessageWithReasoning(originatorID string, parentOriginatorID string, parentOriginatorVersion uint64, msg llm.Message, usage llm.Usage, cumulativeTotal int64, reasoningSummary string, speed llm.Speed, tokenEstimateMultiplier ...float64) *types.Event {
 	multiplier := 0.0
 	if len(tokenEstimateMultiplier) > 0 {
 		multiplier = tokenEstimateMultiplier[0]
@@ -582,6 +583,7 @@ func NewLLMAgentMessageWithReasoning(originatorID string, parentOriginatorID str
 		CumulativeTotal:         cumulativeTotal,
 		ReasoningSummary:        reasoningSummary,
 		TokenEstimateMultiplier: multiplier,
+		Speed:                   speed,
 	}
 
 	llmAgentMessagePayload, _ := json.Marshal(llmAgentMessage)
@@ -704,6 +706,7 @@ type LLMAgentResponse struct {
 	CoversThroughVersion    uint64      `json:"covers_through_version,omitempty"`
 	TokenEstimateMultiplier float64     `json:"token_estimate_multiplier,omitempty"`
 	CommandOutcomeKey       string      `json:"command_outcome_key,omitempty"`
+	Speed                   llm.Speed   `json:"speed,omitzero"`
 }
 
 type LLMRequestRetry struct {
@@ -734,7 +737,7 @@ func NewLLMRequestRetry(originatorID string, parentOriginatorID string, parentOr
 }
 
 func NewLLMAgentResponse(originatorID string, parentOriginatorID string, parentOriginatorVersion uint64, msg llm.Message, usage llm.Usage, cumulativeTotal int64) *types.Event {
-	return NewLLMAgentResponseWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, msg, usage, cumulativeTotal, "")
+	return NewLLMAgentResponseWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, msg, usage, cumulativeTotal, "", llm.Speed{})
 }
 
 func NewLLMCommandOutcome(originatorID, key, content string) *types.Event {
@@ -746,7 +749,7 @@ func NewLLMCommandOutcome(originatorID, key, content string) *types.Event {
 	return types.NewEvent(types.NewOriginator(originatorID, 0), LLMAgentResponseCreated, string(data))
 }
 
-func NewLLMAgentResponseWithReasoning(originatorID string, parentOriginatorID string, parentOriginatorVersion uint64, msg llm.Message, usage llm.Usage, cumulativeTotal int64, reasoningSummary string, tokenEstimateMultiplier ...float64) *types.Event {
+func NewLLMAgentResponseWithReasoning(originatorID string, parentOriginatorID string, parentOriginatorVersion uint64, msg llm.Message, usage llm.Usage, cumulativeTotal int64, reasoningSummary string, speed llm.Speed, tokenEstimateMultiplier ...float64) *types.Event {
 	multiplier := 0.0
 	if len(tokenEstimateMultiplier) > 0 {
 		multiplier = tokenEstimateMultiplier[0]
@@ -759,6 +762,7 @@ func NewLLMAgentResponseWithReasoning(originatorID string, parentOriginatorID st
 		CumulativeTotal:         cumulativeTotal,
 		ReasoningSummary:        reasoningSummary,
 		TokenEstimateMultiplier: multiplier,
+		Speed:                   speed,
 	}
 
 	llmAgentResponsePayload, _ := json.Marshal(llmAgentResponse)

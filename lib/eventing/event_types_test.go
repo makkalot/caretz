@@ -118,7 +118,7 @@ func TestNewLLMAgentMessage(t *testing.T) {
 
 func TestNewLLMAgentMessagePersistsTokenEstimateMultiplier(t *testing.T) {
 	event := NewLLMAgentMessageWithReasoning("orig-1", "parent-1", 2,
-		llm.Message{Role: llm.RoleAssistant, Content: "calling tool"}, llm.Usage{}, 0, "", 0.74)
+		llm.Message{Role: llm.RoleAssistant, Content: "calling tool"}, llm.Usage{}, 0, "", llm.Speed{}, 0.74)
 
 	var payload LLMAgentMessage
 	if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {
@@ -228,7 +228,7 @@ func TestNewLLMAgentResponse(t *testing.T) {
 
 func TestNewLLMAgentResponsePersistsTokenEstimateMultiplier(t *testing.T) {
 	event := NewLLMAgentResponseWithReasoning("orig-1", "parent-1", 4,
-		llm.Message{Role: llm.RoleAssistant, Content: "done"}, llm.Usage{}, 0, "", 0.69)
+		llm.Message{Role: llm.RoleAssistant, Content: "done"}, llm.Usage{}, 0, "", llm.Speed{}, 0.69)
 
 	var payload LLMAgentResponse
 	if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {
@@ -252,7 +252,7 @@ func TestAgentInterruptedLogMessageCanBeDeliveredAsLogMessage(t *testing.T) {
 
 func TestNewLLMAgentResponseWithReasoningKeepsReasoningOutOfLLMMessage(t *testing.T) {
 	msg := llm.Message{Role: llm.RoleAssistant, Content: "done"}
-	event := NewLLMAgentResponseWithReasoning("orig-1", "parent-1", 4, msg, llm.Usage{}, 0, "thinking summary")
+	event := NewLLMAgentResponseWithReasoning("orig-1", "parent-1", 4, msg, llm.Usage{}, 0, "thinking summary", llm.Speed{})
 
 	var payload LLMAgentResponse
 	if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {

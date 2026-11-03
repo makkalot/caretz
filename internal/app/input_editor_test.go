@@ -369,6 +369,23 @@ func TestEditorFooterShowsSessionStatus(t *testing.T) {
 	}
 }
 
+func TestEditorFooterShowsSpeedAfterCache(t *testing.T) {
+	e := newTestEditor(t, "", t.TempDir())
+	e.status = func() editorStatus {
+		return editorStatus{
+			Model:         "m",
+			ContextTokens: 950,
+			Usage:         llm.Usage{PromptTokens: 1000, CachedPromptTokens: 500},
+			Speed:         llm.Speed{TokensPerSecond: 84.6},
+		}
+	}
+	e.statusSnapshot = e.status()
+
+	if got, want := e.footer(80), "  build · m · ctx 950 · cache 50% · 85 tok/s"; got != want {
+		t.Fatalf("footer = %q, want %q", got, want)
+	}
+}
+
 func TestEditorFooterHidesCacheBeforeFirstResponse(t *testing.T) {
 	e := newTestEditor(t, "", t.TempDir())
 	e.status = func() editorStatus { return editorStatus{Model: "m", ContextTokens: 950} }

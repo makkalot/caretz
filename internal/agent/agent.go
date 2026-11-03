@@ -955,8 +955,9 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 		}
 		contextSizeRecoveries = 0
 		result = normalizeLLMResponse(result)
-		a.logger.Info("%s #%d ← %s prompt=%d completion=%d %s", requestKind, iteration, formatDuration(time.Since(requestStart)),
-			result.Usage.PromptTokens, result.Usage.CompletionTokens, describeResponse(result))
+		speed := result.Speed()
+		a.logger.Info("%s #%d ← %s prompt=%d completion=%d reasoning=%d tok/s=%.1f ttft=%dms %s", requestKind, iteration, formatDuration(time.Since(requestStart)),
+			result.Usage.PromptTokens, result.Usage.CompletionTokens, result.Usage.ReasoningTokens, speed.TokensPerSecond, speed.TTFTMs, describeResponse(result))
 		if a.contextManager != nil && !summary && requestEstimate > 0 && result.Usage.PromptTokens > 0 {
 			beforeMultiplier := a.contextManager.TokenEstimateMultiplier()
 			a.contextManager.UpdateTokenCalibration(requestEstimate, result.Usage.PromptTokens)
@@ -1008,7 +1009,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			// save at this point the response to the context store
 			var agentResponseEvent *types.Event
 			if !summary {
-				agentResponseEvent = eventing.NewLLMAgentResponseWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, result.Message, result.Usage, cumulativeTotal, result.ReasoningSummary, a.tokenEstimateMultiplier())
+				agentResponseEvent = eventing.NewLLMAgentResponseWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, result.Message, result.Usage, cumulativeTotal, result.ReasoningSummary, speed, a.tokenEstimateMultiplier())
 			} else {
 				agentResponseEvent = eventing.NewLLMAgentSummaryResponse(originatorID, parentOriginatorID, parentOriginatorVersion, result.Message, result.Usage, cumulativeTotal)
 			}
@@ -1026,7 +1027,7 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 			a.setActiveMessages(messages)
 		}
 		loopGuard.observeResponse(result, cumulativeTotal)
-		agentMessageEvent := eventing.NewLLMAgentMessageWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, result.Message, result.Usage, cumulativeTotal, result.ReasoningSummary, a.tokenEstimateMultiplier())
+		agentMessageEvent := eventing.NewLLMAgentMessageWithReasoning(originatorID, parentOriginatorID, parentOriginatorVersion, result.Message, result.Usage, cumulativeTotal, result.ReasoningSummary, speed, a.tokenEstimateMultiplier())
 		if _, err := a.contextSessionStore.AppendAgentMessage(agentMessageEvent); err != nil {
 			a.logger.Warn("Failed to append agent message to context store: %v", err)
 		}

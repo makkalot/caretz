@@ -33,6 +33,7 @@ type CLIOutput struct {
 	spinner                  *terminalSpinner
 	now                      func() time.Time
 	latestUsage              llm.Usage
+	latestSpeed              llm.Speed
 	// Styles are derived per stream so each is enabled independently: the
 	// final assistant response is styled for stdout, while activity (user
 	// echo, tool calls, tool results, tokens, errors, replay) is styled for
@@ -625,9 +626,10 @@ func (o *CLIOutput) HandleLLMAgentMessageCreated(e *types.Event) error {
 		return err
 	}
 	o.latestUsage = payload.Usage
+	o.latestSpeed = payload.Speed
 
 	if o.mode == ModeDetailed && payload.Usage.TotalTokens > 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "\n%s\n", o.stderrStyle.Muted("["+o.formatUsageLine(payload.Usage)+"]"))
+		_, _ = fmt.Fprintf(os.Stderr, "\n%s\n", o.stderrStyle.Muted("["+o.formatUsageLine(payload.Usage, payload.Speed)+"]"))
 	}
 
 	o.finishReasoningStream()
@@ -740,10 +742,11 @@ func (o *CLIOutput) HandleLLMAgentResponseCreated(e *types.Event) error {
 		return err
 	}
 	o.latestUsage = payload.Usage
+	o.latestSpeed = payload.Speed
 	o.finishReasoningStream()
 
 	if o.mode == ModeDetailed && payload.Usage.TotalTokens > 0 {
-		_, _ = fmt.Fprintf(os.Stderr, "\n%s\n", o.stderrStyle.Muted("["+o.formatUsageLine(payload.Usage)+"]"))
+		_, _ = fmt.Fprintf(os.Stderr, "\n%s\n", o.stderrStyle.Muted("["+o.formatUsageLine(payload.Usage, payload.Speed)+"]"))
 	}
 	if o.mode == ModeCompact {
 		o.beginCompactBlock()
@@ -842,6 +845,12 @@ func (o *CLIOutput) LatestUsage() llm.Usage {
 	return o.latestUsage
 }
 
+// LatestSpeed returns the generation speed of the most recent agent
+// response, or zero when it is unknown.
+func (o *CLIOutput) LatestSpeed() llm.Speed {
+	return o.latestSpeed
+}
+
 func compactTokenCount(tokens int64) string {
 	if tokens < 1000 {
 		return fmt.Sprintf("%d", tokens)
@@ -884,19 +893,41 @@ func (o *CLIOutput) HandleCompactionCompletedCreated(e *types.Event) error {
 	return nil
 }
 
-func (o *CLIOutput) formatUsageLine(usage llm.Usage) string {
+func (o *CLIOutput) formatUsageLine(usage llm.Usage, speed llm.Speed) string {
 	ctxTokens := 0
 	ctxWindow := 0
 	if o.session != nil {
 		ctxTokens = o.session.EstimatedContextTokens()
 		ctxWindow = o.session.ContextWindow()
 	}
-	return fmt.Sprintf("cache %s | ctx %s | turn prompt=%d cached=%d completion=%d",
+	line := fmt.Sprintf("cache %s | ctx %s | turn prompt=%d cached=%d completion=%d",
 		formatCachePercent(usage),
 		formatContextTokens(ctxTokens, ctxWindow),
 		usage.PromptTokens,
 		usage.CachedPromptTokens,
 		usage.CompletionTokens)
+	if usage.ReasoningTokens > 0 {
+		line += fmt.Sprintf(" reasoning=%d", usage.ReasoningTokens)
+	}
+	if speed.TokensPerSecond > 0 {
+		line += " | " + formatSpeed(speed)
+		if speed.TTFTMs > 0 {
+			line += fmt.Sprintf(" ttft %.1fs", float64(speed.TTFTMs)/1000)
+		}
+	}
+	return line
+}
+
+// FormatSpeed formats a response's generation speed as "85 tok/s".
+func FormatSpeed(speed llm.Speed) string {
+	return formatSpeed(speed)
+}
+
+func formatSpeed(speed llm.Speed) string {
+	if speed.TokensPerSecond < 10 {
+		return fmt.Sprintf("%.1f tok/s", speed.TokensPerSecond)
+	}
+	return fmt.Sprintf("%.0f tok/s", speed.TokensPerSecond)
 }
 
 func formatContextTokens(current, max int) string {

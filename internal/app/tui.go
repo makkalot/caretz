@@ -334,6 +334,7 @@ func runRawTUI(state *tuiState, root string, agentsDirs []string) error {
 			ContextTokens: state.session.EstimatedContextTokens(),
 			ContextWindow: state.session.ContextWindow(),
 			Usage:         state.cliOutput.LatestUsage(),
+			Speed:         state.cliOutput.LatestSpeed(),
 		}
 	}
 	state.clearScreen = editor.runtime.ClearScreen

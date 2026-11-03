@@ -210,7 +210,7 @@ func TestCompactionManagerRestoreContextUsesLatestPersistedTokenCalibration(t *t
 			t.Fatalf("append user: %v", err)
 		}
 		response := eventing.NewLLMAgentResponseWithReasoning("ch-1", "parent-1", 0,
-			llm.Message{Role: llm.RoleAssistant, Content: assistantContent}, llm.Usage{}, 0, "", multiplier)
+			llm.Message{Role: llm.RoleAssistant, Content: assistantContent}, llm.Usage{}, 0, "", llm.Speed{}, multiplier)
 		if _, err := ctxStore.AppendAgentResponse(response); err != nil {
 			t.Fatalf("append response: %v", err)
 		}
@@ -243,7 +243,7 @@ func TestDisabledManagerRestoreContextUsesPersistedTokenCalibration(t *testing.T
 		t.Fatalf("append user: %v", err)
 	}
 	response := eventing.NewLLMAgentResponseWithReasoning("ch-1", "parent-1", 0,
-		llm.Message{Role: llm.RoleAssistant, Content: "hi"}, llm.Usage{}, 0, "", 0.73)
+		llm.Message{Role: llm.RoleAssistant, Content: "hi"}, llm.Usage{}, 0, "", llm.Speed{}, 0.73)
 	if _, err := ctxStore.AppendAgentResponse(response); err != nil {
 		t.Fatalf("append response: %v", err)
 	}
