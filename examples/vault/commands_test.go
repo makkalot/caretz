@@ -57,15 +57,14 @@ func TestPrompts(t *testing.T) {
 		}
 	}
 	o := options{daily: "09:15", weekly: "Fri 17:30"}
-	for _, want := range []string{"2026-12-31", "ListSchedules", "RemoveSchedule", "UpdateSchedule", "daily:09:15", "daily:17:30", "weekday is Fri", "[vault:daily-plan]", "[vault:weekly-review]"} {
+	for _, want := range []string{"2026-12-31", "ListSchedules", "RemoveSchedule", "UpdateSchedule", "daily:09:15", "weekly:Fri 17:30", "[vault:daily-plan]", "[vault:weekly-review]"} {
 		if !strings.Contains(setupPrompt(o, now), want) {
 			t.Errorf("setup prompt missing %q", want)
 		}
 	}
 	o.demo = true
-	prompt := setupPrompt(o, now)
-	if strings.Count(prompt, "every:1m") != 2 || strings.Contains(prompt, "weekday is Fri") {
-		t.Fatal("demo should schedule both jobs every minute without a weekday guard")
+	if prompt := setupPrompt(o, now); strings.Count(prompt, "every:1m") != 2 {
+		t.Fatal("demo should schedule both jobs every minute")
 	}
 }
 

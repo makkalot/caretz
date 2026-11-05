@@ -112,6 +112,21 @@ func (c Config) PolicyForWorkspace(workspace string) (ModelPolicy, error) {
 	return policy, nil
 }
 
+// CoversHome reports whether the rule's directory is the home directory or
+// one above it, so that it applies to everything under home.
+func (r ModelRule) CoversHome() bool {
+	home, err := canonicalModelPath("~")
+	if err != nil {
+		return false
+	}
+	path, err := canonicalModelPath(r.Path)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(path, home)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func (p ModelPolicy) Description() string {
 	if p.Rule == nil {
 		return ""

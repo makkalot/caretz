@@ -77,7 +77,18 @@ const chatGPTLoginTimeout = 10 * time.Minute
 type signInService struct {
 	title   string
 	baseURL string
-	signIn  func(ctx context.Context, homePath, providerKey string, out, errOut io.Writer) (models []string, exists bool, err error)
+	// paste, when set, reads the pasted redirect URL on a headless machine.
+	signIn func(ctx context.Context, homePath, providerKey string, paste io.Reader, out, errOut io.Writer) (models []string, exists bool, err error)
+}
+
+// signInPasteInput returns lines when the person at terminal stream must paste
+// the sign-in redirect because a browser here wouldn't be theirs. Otherwise it
+// returns nil, leaving the browser callback as the only way back.
+func signInPasteInput(stream, lines io.Reader) io.Reader {
+	if isTerminalStream(stream) && chatgptauth.Headless() {
+		return lines
+	}
+	return nil
 }
 
 var signInServices = map[string]signInService{
@@ -105,7 +116,7 @@ func (c authCommand) login(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), chatGPTLoginTimeout)
 	defer cancel()
-	models, exists, err := service.signIn(ctx, c.homePath, name, c.out, c.errOut)
+	models, exists, err := service.signIn(ctx, c.homePath, name, signInPasteInput(c.in, c.in), c.out, c.errOut)
 	if err != nil {
 		_, _ = fmt.Fprintf(c.errOut, "error: %v\n", err)
 		return 1
@@ -136,7 +147,7 @@ func (c authCommand) login(args []string) int {
 // exists reports whether name was already a ChatGPT provider; one that uses
 // an API key is refused, so signing in never overwrites its key. When the
 // models can't be listed it prints a warning and returns none.
-func signInWithChatGPT(ctx context.Context, homePath, name string, out, errOut io.Writer) (models []string, exists bool, err error) {
+func signInWithChatGPT(ctx context.Context, homePath, name string, paste io.Reader, out, errOut io.Writer) (models []string, exists bool, err error) {
 	home, err := config.LoadProfileWithTrust(homePath, "", "", false)
 	if err != nil {
 		return nil, false, err
@@ -153,6 +164,7 @@ func signInWithChatGPT(ctx context.Context, homePath, name string, out, errOut i
 	cred, err := chatgptauth.NewClient().Login(ctx, chatgptauth.LoginOptions{
 		Previous: creds.ProviderOAuth(name),
 		Out:      out,
+		Paste:    paste,
 		OnRegistered: func(registered config.OAuthCredential) error {
 			return config.SaveProviderOAuth(credentialsPath, name, registered)
 		},

@@ -48,7 +48,7 @@ type setupWizard struct {
 	out, errOut io.Writer
 	reader      *bufio.Reader
 	// signIn replaces the sign-in service's browser flow in tests.
-	signIn func(ctx context.Context, homePath, providerKey string, out, errOut io.Writer) ([]string, bool, error)
+	signIn func(ctx context.Context, homePath, providerKey string, paste io.Reader, out, errOut io.Writer) ([]string, bool, error)
 }
 
 func runSetupCommand(ctx context.Context, args []string, in io.Reader, stdout, stderr io.Writer) int {
@@ -252,7 +252,7 @@ func (w *setupWizard) signInProvider(path, serviceName string, service signInSer
 	var models []string
 	for {
 		ctx, cancel := context.WithTimeout(w.ctx, chatGPTLoginTimeout)
-		models, _, err = signIn(ctx, path, key, w.out, w.errOut)
+		models, _, err = signIn(ctx, path, key, signInPasteInput(w.in, w.reader), w.out, w.errOut)
 		cancel()
 		if err == nil {
 			break

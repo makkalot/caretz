@@ -1,6 +1,7 @@
 package chatgptauth
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -9,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -218,6 +220,213 @@ func TestLoginRunsPKCEFlowAndVerifiesIDToken(t *testing.T) {
 	}
 	if cred.HostID != registered.HostID {
 		t.Fatalf("host ID changed during login")
+	}
+}
+
+// loginOutput hands each write of Login's output to the test.
+type loginOutput chan string
+
+func (o loginOutput) Write(p []byte) (int, error) {
+	o <- string(p)
+	return len(p), nil
+}
+
+// waitFor returns the first write containing want, skipping earlier ones.
+func (o loginOutput) waitFor(t *testing.T, want string) string {
+	t.Helper()
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case text := <-o:
+			if strings.Contains(text, want) {
+				return text
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for output containing %q", want)
+		}
+	}
+}
+
+// startPasteAuthorization reads the printed sign-in URL and records its PKCE
+// values, as the authorization server would, returning its query.
+func (f *fakeOAuth) startPasteAuthorization(t *testing.T, out loginOutput) url.Values {
+	t.Helper()
+	text := out.waitFor(t, "code_challenge=")
+	_, rest, _ := strings.Cut(text, "  http")
+	raw, _, _ := strings.Cut("http"+rest, "\n")
+	q := mustQuery(t, raw)
+	f.mu.Lock()
+	f.challenge, f.nonce = q.Get("code_challenge"), q.Get("nonce")
+	f.mu.Unlock()
+	return q
+}
+
+func redirectURL(q url.Values, state string) string {
+	return q.Get("redirect_uri") + "?" + url.Values{
+		"code": {"the-code"}, "state": {state}, "client_id": {"oaiapp_test"},
+	}.Encode()
+}
+
+type loginResult struct {
+	cred config.OAuthCredential
+	err  error
+}
+
+func TestLoginAcceptsPastedRedirect(t *testing.T) {
+	fake := newFakeOAuth(t)
+	in, typed := io.Pipe()
+	defer func() { _ = typed.Close() }()
+	out := make(loginOutput, 32)
+	done := make(chan loginResult, 1)
+	go func() {
+		cred, err := fake.client().Login(context.Background(), LoginOptions{
+			ListenAddr: "127.0.0.1:0", Out: out, Paste: in,
+			OpenBrowser: func(string) error {
+				t.Error("paste mode must not open a browser")
+				return nil
+			},
+		})
+		done <- loginResult{cred, err}
+	}()
+	q := fake.startPasteAuthorization(t, out)
+
+	for _, tc := range []struct{ line, want string }{
+		{"not a url", "not the sign-in redirect"},
+		{"https://example.com/elsewhere?code=x", "not the sign-in redirect"},
+		{redirectURL(q, "other-state"), "different sign-in"},
+	} {
+		if _, err := fmt.Fprintln(typed, tc.line); err != nil {
+			t.Fatal(err)
+		}
+		if text := out.waitFor(t, tc.want); strings.Contains(text, "the-code") {
+			t.Fatalf("message repeats the pasted code: %q", text)
+		}
+	}
+	if _, err := fmt.Fprintln(typed, "  "+redirectURL(q, q.Get("state"))+"  "); err != nil {
+		t.Fatal(err)
+	}
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("Login() error: %v", result.err)
+	}
+	if result.cred.ClientID != "oaiapp_test" || result.cred.RefreshToken != "refresh-1" {
+		t.Fatalf("credential = %+v", result.cred)
+	}
+}
+
+func TestLoginPastedErrorStopsSignIn(t *testing.T) {
+	fake := newFakeOAuth(t)
+	line := "http://127.0.0.1:1455" + callbackPath + "?error=access_denied\n"
+	_, err := fake.client().Login(context.Background(), LoginOptions{
+		ListenAddr: "127.0.0.1:0", Paste: strings.NewReader(line),
+	})
+	if err == nil || !strings.Contains(err.Error(), "access_denied") {
+		t.Fatalf("Login() error = %v, want access_denied", err)
+	}
+}
+
+// A tunnelled browser can still reach the listener while a paste read is in
+// flight. Login must finish that read, or it steals the caller's next input.
+func TestLoginBrowserCallbackFinishesPasteRead(t *testing.T) {
+	fake := newFakeOAuth(t)
+	pipe, typed := io.Pipe()
+	defer func() { _ = typed.Close() }()
+	in := bufio.NewReader(pipe)
+	out := make(loginOutput, 32)
+	done := make(chan loginResult, 1)
+	go func() {
+		cred, err := fake.client().Login(context.Background(), LoginOptions{
+			ListenAddr: "127.0.0.1:0", Out: out, Paste: in,
+		})
+		done <- loginResult{cred, err}
+	}()
+	q := fake.startPasteAuthorization(t, out)
+	resp, err := http.Get(redirectURL(q, q.Get("state")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	out.waitFor(t, "Press Enter")
+	select {
+	case <-done:
+		t.Fatal("Login returned with a paste read still in flight")
+	default:
+	}
+	go func() { _, _ = fmt.Fprint(typed, "\nnext answer\n") }()
+	if result := <-done; result.err != nil {
+		t.Fatalf("Login() error: %v", result.err)
+	}
+	next, err := in.ReadString('\n')
+	if err != nil || next != "next answer\n" {
+		t.Fatalf("next read = %q, %v; the caller's input must survive", next, err)
+	}
+}
+
+// Input that ends, such as stdin closing, must not end the sign-in.
+func TestLoginPasteEOFKeepsWaitingForBrowser(t *testing.T) {
+	fake := newFakeOAuth(t)
+	out := make(loginOutput, 32)
+	done := make(chan loginResult, 1)
+	go func() {
+		cred, err := fake.client().Login(context.Background(), LoginOptions{
+			ListenAddr: "127.0.0.1:0", Out: out, Paste: strings.NewReader(""),
+		})
+		done <- loginResult{cred, err}
+	}()
+	q := fake.startPasteAuthorization(t, out)
+	resp, err := http.Get(redirectURL(q, q.Get("state")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if result := <-done; result.err != nil {
+		t.Fatalf("Login() error: %v", result.err)
+	}
+}
+
+func TestLoginTimeoutFinishesPasteRead(t *testing.T) {
+	fake := newFakeOAuth(t)
+	pipe, typed := io.Pipe()
+	defer func() { _ = typed.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	out := make(loginOutput, 32)
+	done := make(chan error, 1)
+	go func() {
+		_, err := fake.client().Login(ctx, LoginOptions{ListenAddr: "127.0.0.1:0", Out: out, Paste: pipe})
+		done <- err
+	}()
+	out.waitFor(t, "code_challenge=")
+	cancel()
+	out.waitFor(t, "Press Enter")
+	if _, err := fmt.Fprintln(typed); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Login() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestHeadless(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		goos string
+		env  map[string]string
+		want bool
+	}{
+		{"mac desktop", "darwin", nil, false},
+		{"mac over ssh", "darwin", map[string]string{"SSH_TTY": "/dev/ttys001"}, true},
+		{"linux no display", "linux", nil, true},
+		{"linux x11", "linux", map[string]string{"DISPLAY": ":0"}, false},
+		{"linux wayland", "linux", map[string]string{"WAYLAND_DISPLAY": "wayland-0"}, false},
+		{"x forwarding over ssh", "linux", map[string]string{"DISPLAY": "localhost:10", "SSH_CONNECTION": "1 2 3 4"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := headless(tc.goos, func(key string) string { return tc.env[key] })
+			if got != tc.want {
+				t.Fatalf("headless() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
