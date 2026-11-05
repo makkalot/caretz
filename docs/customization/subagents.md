@@ -34,6 +34,10 @@ the parent, and lets the parent produce the user-facing response. Subagent
 orchestration is sequential. For multi-step work with independent checks, see
 [Goals](../goals/_index.md).
 
+For an agent that should stay running, remember earlier requests, and answer
+asynchronously while you keep working, use `mode: peer` instead. See
+[Peer bots](../peers.md).
+
 ## Optional Fields
 
 `description`, `mode: subagent`, and a non-empty prompt body are required.

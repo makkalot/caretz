@@ -116,6 +116,7 @@ func discoverSubagentCandidates(agentsDirs []string) []pathCandidate {
 	if err != nil {
 		return nil
 	}
+	defs = subagents.Subagents(defs)
 	candidates := make([]pathCandidate, 0, len(defs))
 	for _, def := range defs {
 		candidate := newPathCandidate(def.Name, false)

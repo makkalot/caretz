@@ -141,6 +141,9 @@ func (a *AgentSession) RunSubagent(ctx context.Context, opts SubagentRunOptions)
 	if err != nil {
 		return SubagentRunResult{}, err
 	}
+	if def.IsPeer() {
+		return SubagentRunResult{}, fmt.Errorf("%q is a peer bot, not a subagent; use SendMessage to talk to it", name)
+	}
 	child, err := a.NewSubagentChildSession(ctx, def, SubagentChildOptions{
 		Prefix:           "subagent-" + def.Name,
 		ModelRefOverride: opts.ModelRefOverride,
