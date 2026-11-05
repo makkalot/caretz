@@ -1,21 +1,23 @@
 ---
-title: "Daily and one-shot runs"
+title: "Daily, weekly, and one-shot runs"
 weight: 20
-description: "Run a prompt at a time of day, or once later."
+description: "Run a prompt at a time of day, on chosen weekdays, or once later."
 ---
 
-# Daily and One-Shot Runs
+# Daily, Weekly, and One-Shot Runs
 
-Ask in plain language for a run at a time of day, or for a single run later.
-Caretz registers the schedule for you:
+Ask in plain language for a run at a time of day, on chosen weekdays, or for a
+single run later. Caretz registers the schedule for you:
 
 ```text
 Every day at 09:00, summarize yesterday's commits and open TODOs
 Every day at 18:30 Europe/Berlin, check whether the nightly build passed
+Every Monday at 10:00, review the open pull requests
+Every Monday and Thursday at 08:30, check for dependency updates
 In one hour, check whether the deploy finished and tell me the result
 ```
 
-Daily times use your local timezone unless you name one. Check and cancel these
+Times use your local timezone unless you name one. Check and cancel these
 schedules the same way as loops: `/schedule-list`, then
 `Cancel schedule <id>`.
 

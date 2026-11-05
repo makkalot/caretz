@@ -1,6 +1,6 @@
 ---
 title: "Schedules"
-description: "Run a prompt every few minutes, every day, or once at a set time."
+description: "Run a prompt every few minutes, every day or week, or once at a set time."
 ---
 
 # Run Tasks on a Schedule
@@ -21,7 +21,8 @@ one model turn to read the output. Schedules belong to the session: they run whi
 pick up again when you [resume it](../sessions/_index.md).
 
 - [Repeat with /loop](loop.md): run a prompt every few minutes or hours.
-- [Daily and one-shot runs](daily-and-one-shot.md): ask for a time of day or
-  a single run later, and see how schedules behave when Caretz is closed.
+- [Daily, weekly, and one-shot runs](daily-and-one-shot.md): ask for a time of
+  day, chosen weekdays, or a single run later, and see how schedules behave when
+  Caretz is closed.
 - [Models and context](models.md): run scheduled prompts on a cheaper model
   with a smaller context window.

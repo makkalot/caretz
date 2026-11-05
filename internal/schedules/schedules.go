@@ -45,7 +45,7 @@ const (
 const ModeCommand = "command"
 
 var (
-	ErrMalformed        = errors.New("malformed schedule: expected every:<duration>, daily:<HH:MM>[@IANA/timezone], or at:<RFC3339 timestamp>")
+	ErrMalformed        = errors.New("malformed schedule: expected every:<duration>, daily:<HH:MM>[@IANA/timezone], weekly:<Day>[,<Day>...] <HH:MM>[@IANA/timezone], or at:<RFC3339 timestamp>")
 	ErrIntervalTooShort = errors.New("schedule interval must be at least 1m")
 	ErrPast             = errors.New("one-shot schedule must be in the future")
 	ErrEmptyPrompt      = errors.New("schedule prompt must not be empty")
@@ -269,12 +269,12 @@ func Parse(spec string, now time.Time) (next time.Time, interval time.Duration, 
 		}
 		return t.UTC(), 0, nil
 	}
-	if strings.HasPrefix(spec, "daily:") {
-		next, e := nextDaily(spec, now, now.Location())
+	if isCalendar(spec) {
+		cal, e := parseCalendar(spec, now.Location())
 		if e != nil {
 			return time.Time{}, 0, ErrMalformed
 		}
-		return next.UTC(), 24 * time.Hour, nil
+		return cal.next(now).UTC(), cal.period, nil
 	}
 	return time.Time{}, 0, ErrMalformed
 }
@@ -641,9 +641,9 @@ func retryDelay(retry int) time.Duration {
 	return RetryBaseDelay << (retry - 1)
 }
 func (m *Manager) latestDue(spec string, anchor time.Time, d time.Duration, now time.Time) time.Time {
-	if strings.HasPrefix(strings.TrimSpace(spec), "daily:") {
-		if next, err := nextDaily(spec, now, m.location); err == nil {
-			return next.AddDate(0, 0, -1).UTC()
+	if isCalendar(spec) {
+		if cal, err := parseCalendar(spec, m.location); err == nil {
+			return cal.latest(now).UTC()
 		}
 	}
 	return advance(anchor, d, now).Add(-d)
@@ -656,42 +656,127 @@ func advance(anchor time.Time, d time.Duration, now time.Time) time.Time {
 }
 
 func (m *Manager) advance(spec string, anchor time.Time, d time.Duration, now time.Time) time.Time {
-	if strings.HasPrefix(strings.TrimSpace(spec), "daily:") {
-		if next, err := nextDaily(spec, now, m.location); err == nil {
-			return next.UTC()
+	if isCalendar(spec) {
+		if cal, err := parseCalendar(spec, m.location); err == nil {
+			return cal.next(now).UTC()
 		}
 	}
 	return advance(anchor, d, now)
 }
 
-func nextDaily(spec string, now time.Time, fallback *time.Location) (time.Time, error) {
-	value := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(spec), "daily:"))
-	clock, zone, hasZone := strings.Cut(value, "@")
-	loc := fallback
-	if loc == nil {
-		loc = time.Local
+// calendar is a clock time on chosen weekdays, from a daily: or weekly: spec.
+// Occurrences come from the calendar instead of a fixed interval, so they keep
+// their clock time across daylight saving changes.
+type calendar struct {
+	days         [7]bool // indexed by time.Weekday; at least one is set
+	hour, minute int
+	loc          *time.Location
+	// period is the nominal cadence; a nonzero value marks the job recurring.
+	period time.Duration
+}
+
+func isCalendar(spec string) bool {
+	spec = strings.TrimSpace(spec)
+	return strings.HasPrefix(spec, "daily:") || strings.HasPrefix(spec, "weekly:")
+}
+
+func parseCalendar(spec string, fallback *time.Location) (calendar, error) {
+	spec = strings.TrimSpace(spec)
+	value, weekly := strings.CutPrefix(spec, "weekly:")
+	if !weekly {
+		value = strings.TrimPrefix(spec, "daily:")
+	}
+	value, zone, hasZone := strings.Cut(value, "@")
+	cal := calendar{loc: fallback, period: 24 * time.Hour}
+	if cal.loc == nil {
+		cal.loc = time.Local
 	}
 	if hasZone {
 		if strings.TrimSpace(zone) == "" {
-			return time.Time{}, ErrMalformed
+			return calendar{}, ErrMalformed
 		}
 		loaded, err := time.LoadLocation(strings.TrimSpace(zone))
 		if err != nil {
-			return time.Time{}, err
+			return calendar{}, err
 		}
-		loc = loaded
+		cal.loc = loaded
 	}
-	parsed, err := time.Parse("15:04", strings.TrimSpace(clock))
+	clock := strings.TrimSpace(value)
+	if weekly {
+		split := strings.LastIndexAny(clock, " \t")
+		if split < 0 {
+			return calendar{}, ErrMalformed
+		}
+		days, err := parseWeekdays(clock[:split])
+		if err != nil {
+			return calendar{}, err
+		}
+		cal.days, cal.period, clock = days, 7*24*time.Hour, clock[split+1:]
+	} else {
+		for i := range cal.days {
+			cal.days[i] = true
+		}
+	}
+	parsed, err := time.Parse("15:04", clock)
 	if err != nil {
-		return time.Time{}, err
+		return calendar{}, err
 	}
-	localNow := now.In(loc)
-	next := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), parsed.Hour(), parsed.Minute(), 0, 0, loc)
-	if !next.After(localNow) {
-		next = next.AddDate(0, 0, 1)
-	}
-	return next, nil
+	cal.hour, cal.minute = parsed.Hour(), parsed.Minute()
+	return cal, nil
 }
+
+// parseWeekdays reads a comma-separated list of day names such as Mon,Thu.
+func parseWeekdays(list string) ([7]bool, error) {
+	var days [7]bool
+	for _, name := range strings.Split(list, ",") {
+		day, ok := parseWeekday(strings.TrimSpace(name))
+		if !ok {
+			return days, ErrMalformed
+		}
+		days[day] = true
+	}
+	return days, nil
+}
+
+func parseWeekday(name string) (time.Weekday, bool) {
+	for day := time.Sunday; day <= time.Saturday; day++ {
+		full := day.String()
+		if strings.EqualFold(name, full) || strings.EqualFold(name, full[:3]) {
+			return day, true
+		}
+	}
+	return 0, false
+}
+
+// next returns the first occurrence after now.
+func (c calendar) next(now time.Time) time.Time {
+	local := now.In(c.loc)
+	for offset := 0; ; offset++ {
+		if t, ok := c.occurrence(local, offset); ok && t.After(local) {
+			return t
+		}
+	}
+}
+
+// latest returns the last occurrence at or before now.
+func (c calendar) latest(now time.Time) time.Time {
+	local := now.In(c.loc)
+	for offset := 0; ; offset-- {
+		if t, ok := c.occurrence(local, offset); ok && !t.After(local) {
+			return t
+		}
+	}
+}
+
+// occurrence returns the clock time offset days from base, and whether that
+// date is a scheduled day. The weekday comes from the date alone because a
+// clock time inside a daylight saving gap can normalize onto a neighboring day.
+func (c calendar) occurrence(base time.Time, offset int) (time.Time, bool) {
+	year, month, day := base.Date()
+	weekday := time.Date(year, month, day+offset, 0, 0, 0, 0, time.UTC).Weekday()
+	return time.Date(year, month, day+offset, c.hour, c.minute, 0, 0, c.loc), c.days[weekday]
+}
+
 func parseExisting(spec string, created time.Time) (time.Time, time.Duration, error) {
 	return Parse(spec, created.Add(-time.Nanosecond))
 }

@@ -17,7 +17,7 @@ import (
 
 const IntegrationName = "scheduler"
 
-const registerScheduleDescription = "Register a durable every:<duration>, daily:<HH:MM>[@IANA/timezone], or one-shot at:<RFC3339> schedule. Daily times use the local timezone unless one is specified. Set exactly one of command or prompt. " +
+const registerScheduleDescription = "Register a durable every:<duration>, daily:<HH:MM>[@IANA/timezone], weekly:<Day>[,<Day>...] <HH:MM>[@IANA/timezone] (for example weekly:Mon 10:00 or weekly:Mon,Thu 10:00@Europe/Sofia), or one-shot at:<RFC3339> schedule. Daily and weekly times, including the weekday, use the timezone of the machine running caretz unless one is specified, and that may not be the user's timezone, for example in a container or on a server. When you know the user's timezone or they name one, always add it as @IANA/timezone. Next and last run times in tool results are in UTC, so 08:00Z can be a correct 10:00 local run; convert them before telling the user. For a job on chosen weekdays use weekly, not a daily job that checks the date. Set exactly one of command or prompt. " +
 	"Prefer command whenever a shell command or script can do the job deterministically, such as running tests, curl or health checks, git status, or grepping logs: it runs in the sandbox without a subagent, and you then receive its exit code and output to react to. " +
 	"If a check needs several steps, write a script in the workspace and schedule it as the command. " +
 	"Use prompt only when each run needs model judgment, such as reading code, summarizing, or deciding what to change; it runs in an isolated child agent and costs far more tokens. " +

@@ -40,6 +40,149 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestParseWeekly(t *testing.T) {
+	// Saturday 2026-09-05 12:00 UTC.
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name, spec string
+		want       time.Time
+	}{
+		{"later this week", "weekly:Mon 10:00", time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)},
+		{"later today", "weekly:Sat 13:00", time.Date(2026, 9, 5, 13, 0, 0, 0, time.UTC)},
+		{"earlier today waits a week", "weekly:Sat 11:00", time.Date(2026, 9, 12, 11, 0, 0, 0, time.UTC)},
+		{"exactly now waits a week", "weekly:Sat 12:00", time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)},
+		{"several days takes nearest", "weekly:Thu,Sun 09:00", time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)},
+		{"spaces in day list", "weekly:Thu, Sun 09:00", time.Date(2026, 9, 6, 9, 0, 0, 0, time.UTC)},
+		{"full name any case", "weekly:mONDAY 10:00", time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)},
+		{"timezone", "weekly:Mon 10:00@Europe/Sofia", time.Date(2026, 9, 7, 7, 0, 0, 0, time.UTC)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, d, err := Parse(tc.spec, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.Equal(tc.want) || d == 0 {
+				t.Fatalf("Parse = %s, %s; want %s recurring", got, d, tc.want)
+			}
+		})
+	}
+	for _, spec := range []string{"weekly:", "weekly:Mon", "weekly:10:00", "weekly:Mon 25:00", "weekly:Xyz 10:00", "weekly:Mon,,Thu 10:00", "weekly:Mon 10:00@", "weekly:Mon 10:00@Nowhere/Land"} {
+		if _, _, err := Parse(spec, now); !errors.Is(err, ErrMalformed) {
+			t.Errorf("Parse(%q) error = %v, want ErrMalformed", spec, err)
+		}
+	}
+}
+
+func TestWeeklyCadenceKeepsDayAndClockAcrossDaylightSavingChange(t *testing.T) {
+	loc, err := time.LoadLocation("Europe/Sofia")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{location: loc}
+	// Clocks go forward on Sunday 2026-03-29.
+	anchor := time.Date(2026, 3, 23, 10, 0, 0, 0, loc)
+	next := m.advance("weekly:Mon 10:00@Europe/Sofia", anchor, 7*24*time.Hour, anchor)
+	if want := time.Date(2026, 3, 30, 10, 0, 0, 0, loc); !next.Equal(want) {
+		t.Fatalf("next = %s, want %s", next.In(loc), want)
+	}
+	if next.Sub(anchor) != 7*24*time.Hour-time.Hour {
+		t.Fatalf("DST interval = %s, want 167h", next.Sub(anchor))
+	}
+}
+
+func TestWeeklyAdvanceWalksChosenDays(t *testing.T) {
+	m := &Manager{location: time.UTC}
+	spec := "weekly:Mon,Thu 10:00"
+	at := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC) // Monday
+	for _, want := range []time.Time{
+		time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC), // Thursday
+		time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC), // Monday
+		time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC), // Thursday
+	} {
+		at = m.advance(spec, at, 7*24*time.Hour, at)
+		if !at.Equal(want) {
+			t.Fatalf("advance = %s, want %s", at, want)
+		}
+	}
+}
+
+func TestRestoreWeeklyReplaysLatestMissedOccurrence(t *testing.T) {
+	created := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	first := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)   // Monday
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)    // Thursday, 17 days later
+	latest := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC) // Monday
+	job := Job{ID: "sched_weekly", Schedule: "weekly:Mon 10:00@UTC", Prompt: "w", CreatedAt: created, NextRun: first}
+	m, err := New("s", []*types.Event{eventFor(t, "s", Registered, job)}, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := m.List()
+	if len(jobs) != 1 || !jobs[0].NextRun.Equal(latest) || jobs[0].LastStatus != Skipped {
+		t.Fatalf("jobs=%#v, want latest weekly occurrence at %s", jobs, latest)
+	}
+}
+
+func TestRestoreWeeklyDoesNotRerunWhenOnlyOccurrenceIsDue(t *testing.T) {
+	created := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	first := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	now := first.Add(48 * time.Hour)
+	job := Job{ID: "sched_weekly", Schedule: "weekly:Mon 10:00@UTC", Prompt: "w", CreatedAt: created, NextRun: first}
+	m, err := New("s", []*types.Event{eventFor(t, "s", Registered, job)}, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := m.List()
+	if len(jobs) != 1 || !jobs[0].NextRun.Equal(first) || jobs[0].LastStatus != "" {
+		t.Fatalf("jobs=%#v, want the single missed occurrence left due", jobs)
+	}
+}
+
+func TestWeeklyRetriesThenWaitsForNextOccurrence(t *testing.T) {
+	monday := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	now := monday
+	m, err := New("s", nil, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = monday.Add(-time.Hour)
+	job, err := m.Register(context.Background(), "weekly:Mon 10:00@UTC", "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !job.NextRun.Equal(monday) {
+		t.Fatalf("NextRun = %s, want %s", job.NextRun, monday)
+	}
+	now = monday
+	m.jobs[job.ID].Occurrence = monday
+
+	m.finish(job.ID, "", Failed, errors.New("boom"))
+	if got := m.jobs[job.ID].NextRun; !got.Equal(now.Add(time.Minute)) {
+		t.Fatalf("retry NextRun = %s, want one minute later", got)
+	}
+
+	m.jobs[job.ID].RetryCount = MaxRunRetries
+	m.finish(job.ID, "", Failed, errors.New("boom"))
+	if got, want := m.jobs[job.ID].NextRun, monday.AddDate(0, 0, 7); !got.Equal(want) {
+		t.Fatalf("NextRun after exhausted retries = %s, want %s", got, want)
+	}
+}
+
+func TestWeeklyOverlappingOccurrenceIsSkipped(t *testing.T) {
+	monday := time.Date(2026, 9, 7, 10, 0, 0, 0, time.UTC)
+	now := monday.AddDate(0, 0, 7)
+	job := Job{ID: "sched_weekly", Schedule: "weekly:Mon 10:00@UTC", Prompt: "w", CreatedAt: monday.Add(-time.Hour), NextRun: now}
+	m, err := New("s", []*types.Event{eventFor(t, "s", Registered, job)}, nil, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.jobs[job.ID].Running = true
+	m.dispatch(context.Background(), *m.jobs[job.ID])
+	j := m.jobs[job.ID]
+	if want := now.AddDate(0, 0, 7); j.LastStatus != Skipped || !j.NextRun.Equal(want) {
+		t.Fatalf("job=%#v, want skipped to %s", j, want)
+	}
+}
+
 func TestParseDailyWithTimezone(t *testing.T) {
 	now := time.Date(2026, 9, 5, 6, 30, 0, 0, time.UTC)
 	next, recurring, err := Parse("daily:10:00@Europe/Sofia", now)

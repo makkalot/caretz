@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
@@ -34,12 +33,9 @@ func commandPrompt(command, text string, now time.Time) string {
 }
 
 func setupPrompt(o options, now time.Time) string {
-	weekday, clock, _ := strings.Cut(o.weekly, " ")
-	dailySpec, weeklySpec := "daily:"+o.daily, "daily:"+clock
-	weeklyGuard := "Run only if the current local weekday is " + weekday + "; otherwise report skipped without editing files. "
+	dailySpec, weeklySpec := "daily:"+o.daily, "weekly:"+o.weekly
 	if o.demo {
 		dailySpec, weeklySpec = "every:1m", "every:1m"
-		weeklyGuard = "Demo mode: review the current week on every run, regardless of weekday. "
 	}
 	return dated(now) + fmt.Sprintf(`Ensure exactly these two vault prompt schedules exist. First call ListSchedules.
 Identify them by the stable markers [vault:daily-plan] and [vault:weekly-review] in their prompts.
@@ -53,9 +49,9 @@ Daily schedule: RegisterSchedule schedule=%q, prompt:
 items across the vault. Append a ## Plan section to Daily/YYYY-MM-DD.md with priorities,
 open todos, and meetings actually recorded in the notes. Follow the vault conventions.
 Weekly schedule: RegisterSchedule schedule=%q, prompt:
-[vault:weekly-review] Determine the current local date and weekday at run time. %s
+[vault:weekly-review] Determine the current local date at run time.
 Read this ISO week's daily notes and append a review at Reviews/YYYY-Www.md with
 ## Done, ## Still open, and ## Themes. Follow the vault conventions.
 Finish by listing the resulting schedule IDs, cadences, and next run times.
-`, dailySpec, weeklySpec, weeklyGuard)
+`, dailySpec, weeklySpec)
 }
