@@ -383,7 +383,7 @@ func TestSetupSignsInWithChatGPT(t *testing.T) {
 	// Hosted, ChatGPT plan, default provider key, try again after the failed
 	// sign-in, the second model, then skip web search.
 	w := &setupWizard{ctx: context.Background(), in: strings.NewReader("2\n2\n\n1\n2\n\n"), out: &stdout, errOut: &stderr,
-		signIn: func(_ context.Context, homePath, providerKey string, _, _ io.Writer) ([]string, bool, error) {
+		signIn: func(_ context.Context, homePath, providerKey string, _ io.Reader, _, _ io.Writer) ([]string, bool, error) {
 			attempts++
 			if homePath != path || providerKey != "chatgpt" {
 				t.Errorf("signIn(%q, %q)", homePath, providerKey)

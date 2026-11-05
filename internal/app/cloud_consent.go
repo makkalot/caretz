@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -176,11 +177,19 @@ func needsCloudConsent(cfg config.Config, policy config.ModelPolicy, ref, baseUR
 
 // Rules are saved selector snapshots, so later classification changes cannot
 // revoke them. Make their continued permission visible when using a hosted model.
+// A "*" rule already allows every model, so reclassifying changes nothing for
+// it, but one covering the home directory exposes every project under it.
 func hostedModelRuleNotice(cfg config.Config, policy config.ModelPolicy, ref, baseURL string) string {
-	if policy.Rule != nil && policy.Allows(cfg, ref) && !cfg.IsLocalModel(ref, baseURL) {
-		return fmt.Sprintf("notice: %s is classified hosted and allowed by model rule %s; saved allowlists do not change when providers are reclassified. Review the rule if you intended local-only access.", ref, policy.Rule.Path)
+	if policy.Rule == nil || !policy.Allows(cfg, ref) || cfg.IsLocalModel(ref, baseURL) {
+		return ""
 	}
-	return ""
+	if slices.Contains(policy.Rule.Allow, "*") {
+		if policy.Rule.CoversHome() {
+			return fmt.Sprintf("warning: model rule %s allows every model for your whole home directory, so any project under it can be sent to %s (%s). Limit the rule to the directories you mean to share.", policy.Rule.Path, ref, config.EndpointHost(baseURL))
+		}
+		return ""
+	}
+	return fmt.Sprintf("notice: %s is classified hosted and allowed by model rule %s; saved allowlists do not change when providers are reclassified. Review the rule if you intended local-only access.", ref, policy.Rule.Path)
 }
 
 // cloudWorkspaceWarning is shown when nobody can be asked.

@@ -63,10 +63,13 @@ another model with `/models`, or come back once the limit resets.
 [keeps cloud models out](model-rules.md) blocks it. To try it once without
 changing the rule, pass `--allow-model chatgpt/gpt-6.1-sol`.
 
-**Sign-in on a remote machine.** The browser redirects to
-`http://127.0.0.1:1455` on the machine running Caretz. Over SSH, forward that
-port first with `ssh -L 1455:127.0.0.1:1455 host`, then open the printed URL
-on your own machine.
+**Sign-in on a remote machine.** Over SSH, or on Linux with no display, Caretz
+prints the sign-in URL instead of opening a browser. Open it on any machine and
+sign in. The browser then fails to load a `http://127.0.0.1:1455` page, which is
+expected: copy the full URL from its address bar and paste it into Caretz. If
+you'd rather not paste, forward the port first with
+`ssh -L 1455:127.0.0.1:1455 host`; the redirect then reaches Caretz directly,
+and you press Enter to continue.
 
 **A second account.** `caretz auth login chatgpt work` signs another account
 in as provider `work`, and `caretz auth logout work` signs it out. A signed-in

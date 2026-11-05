@@ -515,6 +515,42 @@ func TestReclassifiedProviderKeepsSavedRuleAndWarns(t *testing.T) {
 	}
 }
 
+func TestHostedModelRuleNotice(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home", "me")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	cfg := cloudConsentConfig(true)
+	const localURL = "http://127.0.0.1:8080/v1"
+	for _, tt := range []struct {
+		name, path, ref, baseURL string
+		allow                    []string
+		want                     string
+	}{
+		{name: "named provider may be a stale local snapshot", path: "/work", ref: "cloud/x", baseURL: cloudConsentURL, allow: []string{"cloud/*"}, want: "classified hosted"},
+		{name: "named provider on home keeps the snapshot notice", path: "~", ref: "cloud/x", baseURL: cloudConsentURL, allow: []string{"cloud/*"}, want: "classified hosted"},
+		{name: "allow all on a project is deliberate", path: "~/src/public", ref: "cloud/x", baseURL: cloudConsentURL, allow: []string{"*"}},
+		{name: "allow all outside home is deliberate", path: "/work", ref: "cloud/x", baseURL: cloudConsentURL, allow: []string{"*"}},
+		{name: "allow all on home warns", path: "~", ref: "cloud/x", baseURL: cloudConsentURL, allow: []string{"*"}, want: "whole home directory"},
+		{name: "allow all on absolute home warns", path: home, ref: "cloud/x", baseURL: cloudConsentURL, allow: []string{"*"}, want: "whole home directory"},
+		{name: "allow all above home warns", path: "/", ref: "cloud/x", baseURL: cloudConsentURL, allow: []string{"*"}, want: "whole home directory"},
+		{name: "allow all alongside a selector on home warns", path: "~", ref: "cloud/x", baseURL: cloudConsentURL, allow: []string{"cloud/*", "*"}, want: "whole home directory"},
+		{name: "local model on home stays quiet", path: "~", ref: "local/a", baseURL: localURL, allow: []string{"*"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := config.ModelPolicy{Workspace: home, Rule: &config.ModelRule{Path: tt.path, Allow: tt.allow}}
+			got := hostedModelRuleNotice(cfg, policy, tt.ref, tt.baseURL)
+			if tt.want == "" && got != "" {
+				t.Fatalf("notice = %q, want none", got)
+			}
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("notice = %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassificationStartupPaths(t *testing.T) {
 	for _, tt := range []struct {
 		name, endpoint, override string

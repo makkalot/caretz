@@ -140,8 +140,14 @@ to the `--config-root` config when that file already defines `modelRules`.
 **Saved local rules.** **Always local here** saves a snapshot of the current
 local providers as `provider/*` selectors. Local providers you add later are
 allowed without changing the rule. Reclassifying one as hosted leaves existing
-rules unchanged. Caretz shows a notice when an active rule allows
-the hosted model; review that rule if you intended local-only access.
+rules unchanged. Caretz shows a notice when an active rule names the hosted
+model or its provider; review that rule if you intended local-only access. A
+rule that allows `*` gets no notice, because it already allows every model.
+
+**Allowing everything under home.** A `*` rule on your home directory, or a
+directory above it, lets a hosted model read any project there, so Caretz warns
+each time a hosted model runs under it. To stop the warning, limit the rule to
+the directories you mean to share.
 
 **Notices.** Caretz shows the rule, its source config, the workspace, and the
 model outcome. Prompt mode writes notices to stderr. Interactive mode shows
