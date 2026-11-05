@@ -478,7 +478,7 @@ func TestFormatUsageLineShowsCacheAndContext(t *testing.T) {
 		CachedPromptTokens: 850,
 		CompletionTokens:   319,
 		TotalTokens:        4569,
-	})
+	}, llm.Speed{})
 
 	for _, want := range []string{
 		"cache 20%",
@@ -495,6 +495,16 @@ func TestFormatUsageLineShowsCacheAndContext(t *testing.T) {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("usage line contains unwanted %q: %q", unwanted, got)
 		}
+	}
+}
+
+func TestFormatUsageLineShowsReasoningAndSpeed(t *testing.T) {
+	out := NewCLIOutput(ModeDetailed)
+	got := out.formatUsageLine(llm.Usage{PromptTokens: 100, CompletionTokens: 319, ReasoningTokens: 200, TotalTokens: 419},
+		llm.Speed{TokensPerSecond: 42.4, TTFTMs: 1250})
+
+	if want := "completion=319 reasoning=200 | 42 tok/s ttft 1.2s"; !strings.HasSuffix(got, want) {
+		t.Fatalf("usage line = %q, want suffix %q", got, want)
 	}
 }
 

@@ -56,6 +56,8 @@ type editorStatus struct {
 	ContextWindow int
 	// Usage is the most recent response's usage; zero until the first reply.
 	Usage llm.Usage
+	// Speed is the most recent response's generation speed; zero when unknown.
+	Speed llm.Speed
 }
 
 func newInputEditor(in io.Reader, out io.Writer, prompt string, style output.Style, root string, agentsDirs []string, slashCommandRegistry *slashcmd.Registry) *inputEditor {
@@ -432,7 +434,7 @@ func (e *inputEditor) menuRow(text string, selected bool) string {
 	return "    " + text
 }
 
-// footer renders "mode · model reasoning · ctx · cache" under the input.
+// footer renders "mode · model reasoning · ctx · cache · tok/s" under the input.
 // Segments are dropped from the right until the row fits, so it never wraps.
 func (e *inputEditor) footer(width int) string {
 	segments := []string{e.style.Muted("build")}
@@ -448,6 +450,9 @@ func (e *inputEditor) footer(width int) string {
 	}
 	if status.Usage.PromptTokens > 0 {
 		segments = append(segments, e.style.Muted("cache "+output.CachePercent(status.Usage)))
+	}
+	if status.Speed.TokensPerSecond > 0 {
+		segments = append(segments, e.style.Muted(output.FormatSpeed(status.Speed)))
 	}
 	if e.togglePlanMode != nil {
 		segments = append(segments, e.style.Muted("(shift+tab to toggle)"))

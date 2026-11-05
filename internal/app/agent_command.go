@@ -248,6 +248,11 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		return fileConfig.PolicyForWorkspace(workspace)
 	}
 	session.SetSubagentModelResolver(subagentModelResolver{fileConfig: fileConfig, policyFor: policyFor, llmTimeout: runtimeConfig.LLMTimeout, llmMaxAttempts: runtimeConfig.LLMMaxAttempts, logger: logger})
+	session.SetLoopGuard(rt.LoopGuard)
+	if err := session.ValidateLoopGuard(ctx); err != nil {
+		output.Errorf(stderr, "loop guard judge: %v", err)
+		return 1
+	}
 	if !baseFlags.Incognito {
 		if err := saveSessionRuntime(sessionRuntimeFile, sessionRuntimeStateFromSettings(runtimeConfig, fileConfig.Profile)); err != nil {
 			output.Errorf(stderr, "%v", err)

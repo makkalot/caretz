@@ -501,6 +501,9 @@ func (p *openAIProvider) chatResponsesStreaming(ctx context.Context, systemPromp
 		params.PromptCacheKey = sessionIDFromContext(ctx)
 	}
 
+	// The Responses stream shows only a summary of the model's thinking, so
+	// it never sets Timing.FirstToken and speed is measured over the request.
+	start := time.Now()
 	resp, err := p.postJSON(ctx, "/responses", params, true)
 	if err != nil {
 		return Response{}, err
@@ -583,6 +586,7 @@ func (p *openAIProvider) chatResponsesStreaming(ctx context.Context, systemPromp
 	if err != nil {
 		return Response{}, fmt.Errorf("responses stream error: %w", err)
 	}
+	end := time.Now()
 
 	content := contentBuf.String()
 	reasoningSummary := strings.TrimSpace(reasoningBuf.String())
@@ -600,6 +604,7 @@ func (p *openAIProvider) chatResponsesStreaming(ctx context.Context, systemPromp
 		Usage:            usage,
 		Message:          message,
 		ReasoningSummary: reasoningSummary,
+		Timing:           Timing{Start: start, End: end},
 	}, nil
 }
 
@@ -718,6 +723,7 @@ func (p *openAIProvider) chatStreaming(ctx context.Context, params chatCompletio
 		params.StreamOptions = nil
 	}
 
+	start := time.Now()
 	resp, err := p.postJSON(ctx, "/chat/completions", params, true)
 	if err != nil {
 		return Response{}, err
@@ -727,6 +733,7 @@ func (p *openAIProvider) chatStreaming(ctx context.Context, params chatCompletio
 	var contentBuf strings.Builder
 	var reasoningBuf strings.Builder
 	var usage Usage
+	var clock tokenClock
 	acc := chatStreamAccumulator{toolCalls: map[int]*chatToolCall{}}
 	reasoningHandler := ReasoningHandlerFromContext(ctx)
 
@@ -743,6 +750,9 @@ func (p *openAIProvider) chatStreaming(ctx context.Context, params chatCompletio
 		}
 		choice := chunk.Choices[0]
 		acc.addDelta(choice.Delta)
+		if choice.Delta.Content != "" || choice.Delta.ReasoningContent != "" || len(choice.Delta.ToolCalls) > 0 {
+			clock.tick()
+		}
 		if choice.Delta.ReasoningContent != "" {
 			reasoningBuf.WriteString(choice.Delta.ReasoningContent)
 			if reasoningHandler != nil {
@@ -760,9 +770,18 @@ func (p *openAIProvider) chatStreaming(ctx context.Context, params chatCompletio
 	if err != nil {
 		return Response{}, fmt.Errorf("stream error: %w", err)
 	}
+	end := time.Now()
 
 	if !acc.hasChoice {
 		return Response{}, fmt.Errorf("no choices in response")
+	}
+
+	// A reasoning model that reports thinking tokens but streamed none of
+	// them thought before the first delta; timing from there would overstate
+	// the rate.
+	firstToken := clock.firstToken()
+	if usage.ReasoningTokens > 0 && reasoningBuf.Len() == 0 {
+		firstToken = time.Time{}
 	}
 
 	reasoningSummary := strings.TrimSpace(reasoningBuf.String())
@@ -784,13 +803,37 @@ func (p *openAIProvider) chatStreaming(ctx context.Context, params chatCompletio
 		Usage:            usage,
 		Message:          message,
 		ReasoningSummary: reasoningSummary,
+		Timing:           Timing{Start: start, FirstToken: firstToken, End: end},
 	}, nil
+}
+
+// tokenClock notes when generated tokens start arriving on a stream.
+type tokenClock struct {
+	first  time.Time
+	chunks int
+}
+
+func (c *tokenClock) tick() {
+	if c.chunks == 0 {
+		c.first = time.Now()
+	}
+	c.chunks++
+}
+
+// firstToken returns when the first token arrived, or zero when the whole
+// output came in one chunk, which says nothing about generation speed.
+func (c *tokenClock) firstToken() time.Time {
+	if c.chunks < 2 {
+		return time.Time{}
+	}
+	return c.first
 }
 
 func (p *openAIProvider) chatNonStreaming(ctx context.Context, params chatCompletionParams, onDelta func(string)) (Response, error) {
 	params.Stream = false
 	params.StreamOptions = nil
 
+	start := time.Now()
 	resp, err := p.postJSON(ctx, "/chat/completions", params, false)
 	if err != nil {
 		return Response{}, fmt.Errorf("request error: %w", err)
@@ -801,6 +844,7 @@ func (p *openAIProvider) chatNonStreaming(ctx context.Context, params chatComple
 	if err := json.NewDecoder(resp.Body).Decode(&completion); err != nil {
 		return Response{}, err
 	}
+	end := time.Now()
 	if len(completion.Choices) == 0 {
 		return Response{}, fmt.Errorf("no choices in response")
 	}
@@ -823,6 +867,7 @@ func (p *openAIProvider) chatNonStreaming(ctx context.Context, params chatComple
 		Usage:            fromOpenAIUsage(completion.Usage),
 		Message:          Message{Role: RoleAssistant, Content: choice.Message.Content, ToolCalls: toolCalls},
 		ReasoningSummary: reasoningSummary,
+		Timing:           Timing{Start: start, End: end},
 	}, nil
 }
 
@@ -961,6 +1006,9 @@ type openAIUsage struct {
 	PromptTokensDetail struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
+	CompletionTokensDetail struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
 }
 
 type responseUsage struct {
@@ -970,6 +1018,9 @@ type responseUsage struct {
 	InputTokensDetails struct {
 		CachedTokens int64 `json:"cached_tokens"`
 	} `json:"input_tokens_details"`
+	OutputTokensDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 func fromOpenAIUsage(usage openAIUsage) Usage {
@@ -977,6 +1028,7 @@ func fromOpenAIUsage(usage openAIUsage) Usage {
 		PromptTokens:       usage.PromptTokens,
 		CachedPromptTokens: usage.PromptTokensDetail.CachedTokens,
 		CompletionTokens:   usage.CompletionTokens,
+		ReasoningTokens:    usage.CompletionTokensDetail.ReasoningTokens,
 		TotalTokens:        usage.TotalTokens,
 	}
 }
@@ -986,6 +1038,7 @@ func fromOpenAIResponseUsage(usage responseUsage) Usage {
 		PromptTokens:       usage.InputTokens,
 		CachedPromptTokens: usage.InputTokensDetails.CachedTokens,
 		CompletionTokens:   usage.OutputTokens,
+		ReasoningTokens:    usage.OutputTokensDetails.ReasoningTokens,
 		TotalTokens:        usage.TotalTokens,
 	}
 }

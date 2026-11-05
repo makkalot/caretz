@@ -1187,6 +1187,11 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 		logger:         s.rt.Logger,
 		allowedModels:  s.allowedModels,
 	})
+	session.SetLoopGuard(s.rt.LoopGuard)
+	if err := session.ValidateLoopGuard(s.rt.Ctx); err != nil {
+		_ = session.Close()
+		return nil, fmt.Errorf("loop guard judge: %w", err)
+	}
 	acp := &acpSession{
 		id:              id,
 		modelNotices:    notices,

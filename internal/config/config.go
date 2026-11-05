@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/makkalot/caretz/internal/loopguard"
 	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/internal/tools"
 )
@@ -42,6 +43,7 @@ type Profile struct {
 	Execution      Execution      `json:"execution"`
 	Tasks          Tasks          `json:"tasks"`
 	Goal           Goal           `json:"goal"`
+	LoopGuard      LoopGuard      `json:"loopGuard"`
 	Schedules      *Schedules     `json:"schedules"`
 	Output         Output         `json:"output"`
 	Plan           *bool          `json:"plan"`
@@ -120,6 +122,23 @@ type Goal struct {
 type GoalRole struct {
 	Model     string `json:"model"`
 	Reasoning string `json:"reasoning"`
+}
+
+// LoopGuard watches each turn for the same failure repeating and asks a
+// judge model whether the turn is stuck. Mode is off, shadow (judge and log
+// only) or active (redirect the agent once, then notify the user).
+type LoopGuard struct {
+	Mode            string `json:"mode"`
+	RepeatThreshold *int   `json:"repeatThreshold"`
+	// CheckEvery has the judge look at a turn after this many tool calls,
+	// failures or not; 0 turns the checkpoint off.
+	CheckEvery   *int     `json:"checkEvery"`
+	JudgeTimeout Duration `json:"judgeTimeout"`
+	// Judge picks the judge's model; unset uses the session's current model.
+	Judge *GoalRole `json:"judge"`
+	// Models limits the guard to sessions on these provider/model refs
+	// (globs allowed); unset or empty guards every model.
+	Models []string `json:"models"`
 }
 
 // Schedules picks the model, reasoning and context limits of scheduled runs.
@@ -871,6 +890,7 @@ func mergeProfile(base, override Profile) Profile {
 	if override.Goal.Verifier != nil {
 		base.Goal.Verifier = override.Goal.Verifier
 	}
+	base.LoopGuard = mergeLoopGuard(base.LoopGuard, override.LoopGuard)
 	if override.Schedules != nil {
 		base.Schedules = override.Schedules
 	}
@@ -1067,6 +1087,9 @@ func validate(cfg Config) error {
 		if err := validateSchedules(profile.Schedules, name); err != nil {
 			return err
 		}
+		if err := validateLoopGuard(profile.LoopGuard, name); err != nil {
+			return err
+		}
 	}
 	for providerKey, provider := range cfg.Provider {
 		if provider.Local != nil && *provider.Local && (provider.Options.BaseURL == nil || normalizeSetupBaseURL(*provider.Options.BaseURL) == "") {
@@ -1110,6 +1133,86 @@ func trimStringSlice(values []string) []string {
 		out = append(out, strings.TrimSpace(value))
 	}
 	return out
+}
+
+func mergeLoopGuard(base, override LoopGuard) LoopGuard {
+	if strings.TrimSpace(override.Mode) != "" {
+		base.Mode = override.Mode
+	}
+	if override.RepeatThreshold != nil {
+		base.RepeatThreshold = override.RepeatThreshold
+	}
+	if override.CheckEvery != nil {
+		base.CheckEvery = override.CheckEvery
+	}
+	if override.JudgeTimeout.Set {
+		base.JudgeTimeout = override.JudgeTimeout
+	}
+	if override.Judge != nil {
+		base.Judge = override.Judge
+	}
+	if override.Models != nil {
+		base.Models = override.Models
+	}
+	return base
+}
+
+func validateLoopGuard(guard LoopGuard, profile string) error {
+	if _, err := loopguard.ParseMode(guard.Mode); err != nil {
+		return fmt.Errorf("config profiles.%s.loopGuard.mode: %w", profile, err)
+	}
+	if guard.RepeatThreshold != nil && *guard.RepeatThreshold < 2 {
+		return fmt.Errorf("config profiles.%s.loopGuard.repeatThreshold must be >= 2", profile)
+	}
+	if guard.CheckEvery != nil && *guard.CheckEvery < 0 {
+		return fmt.Errorf("config profiles.%s.loopGuard.checkEvery must be >= 0", profile)
+	}
+	if guard.JudgeTimeout.Set && guard.JudgeTimeout.Duration <= 0 {
+		return fmt.Errorf("config profiles.%s.loopGuard.judgeTimeout must be positive", profile)
+	}
+	if guard.Judge != nil && strings.TrimSpace(guard.Judge.Reasoning) != "" && strings.TrimSpace(guard.Judge.Model) == "" {
+		return fmt.Errorf("config profiles.%s.loopGuard.judge.reasoning requires judge.model", profile)
+	}
+	for _, pattern := range guard.Models {
+		if err := loopguard.ValidateModelPattern(pattern); err != nil {
+			return fmt.Errorf("config profiles.%s.loopGuard.models: %w", profile, err)
+		}
+	}
+	return nil
+}
+
+// ModelRefs returns the provider/model refs that name model served at
+// baseURL: providerKey/model for each provider at that URL, plus any
+// configured model key that aliases the same API model ID. A running
+// provider knows only its model ID and URL, so settings written as refs
+// match through this.
+func (c Config) ModelRefs(model, baseURL string) []string {
+	model = strings.TrimSpace(model)
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if model == "" {
+		return nil
+	}
+	var refs []string
+	for providerKey, provider := range c.Provider {
+		providerURL := ""
+		if provider.Options.BaseURL != nil {
+			providerURL = *provider.Options.BaseURL
+		}
+		if provider.Auth == AuthChatGPT {
+			providerURL = ChatGPTBaseURL
+		}
+		if strings.TrimRight(strings.TrimSpace(providerURL), "/") != baseURL {
+			continue
+		}
+		refs = append(refs, providerKey+"/"+model)
+		for modelKey, configured := range provider.Models {
+			if modelKey != model && configured.Model == model {
+				refs = append(refs, providerKey+"/"+modelKey)
+			}
+		}
+	}
+	sort.Strings(refs)
+	return refs
 }
 
 func validateSchedules(schedules *Schedules, profile string) error {
