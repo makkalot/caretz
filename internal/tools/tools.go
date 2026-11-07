@@ -900,10 +900,19 @@ func ToolDefinitions() []llm.ToolDefinition {
 						"type":        "string",
 						"description": "Optional configured provider/model ref to use for this subagent run, overriding the subagent definition's model.",
 					},
+					"background": map[string]any{
+						"type":        "boolean",
+						"description": "Return immediately; the result arrives in a later message. Only for subagents denied both edit and bash.",
+					},
+					"resume": map[string]any{
+						"type":        "string",
+						"description": "Child session ID of an earlier run to continue; task is then optional. If the user cancelled that run, resume it only when they ask.",
+					},
 				},
 				"anyOf": []map[string]any{
 					{"required": []string{"agent", "task"}},
 					{"required": []string{"subagent_type", "prompt"}},
+					{"required": []string{"resume"}},
 				},
 			},
 		},

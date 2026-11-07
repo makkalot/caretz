@@ -294,6 +294,13 @@ func replaySession(cliOutput *output.CLIOutput, session *agent.AgentSession) err
 	if len(notices) > 0 {
 		output.Notef(stderr, "%s", notices[len(notices)-1])
 	}
+	interrupted, err := session.InterruptedSubagentNotice()
+	if err != nil {
+		return err
+	}
+	if interrupted != "" {
+		output.Notef(stderr, "%s", interrupted)
+	}
 	return nil
 }
 
@@ -313,6 +320,11 @@ func runScannerTUI(state *tuiState) error {
 	}
 	if err := scanner.Err(); err != nil {
 		return err
+	}
+	// Piped input has ended, so no prompt remains to keep the process alive for
+	// background subagents.
+	if code := waitForBackgroundSubagents(context.Background(), state.session); code != 0 {
+		return fmt.Errorf("background subagents did not finish")
 	}
 	return nil
 }

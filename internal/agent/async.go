@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -13,11 +14,20 @@ import (
 	"github.com/makkalot/caretz/internal/subagents"
 	"github.com/makkalot/caretz/internal/tools"
 	"github.com/makkalot/caretz/internal/turnscope"
+	"github.com/makkalot/caretz/internal/uuid"
 	"github.com/makkalot/caretz/lib/eventing"
 	"github.com/makkalot/caretz/lib/types"
 )
 
-const defaultAsyncRunTimeout = 15 * time.Minute
+const (
+	defaultAsyncRunTimeout = 15 * time.Minute
+	// asyncSubagentSource marks runs started through CallSubagent.
+	asyncSubagentSource = "subagent"
+	// subagentReportTimeout bounds the turn that reports finished runs.
+	subagentReportTimeout = 15 * time.Minute
+	// subagentReportWindow lets runs finishing together share one report turn.
+	subagentReportWindow = 500 * time.Millisecond
+)
 
 // asyncTimeout is the cause of an async run's deadline. It names the limit
 // that fired, so a timed-out run reports which one it was rather than a bare
@@ -258,6 +268,17 @@ func (a *AgentSession) executeAsyncEvent(event *types.Event) {
 		}
 		_ = a.PublishAsyncEvent(context.Background(), eventing.NewAsyncRunCompleted(a.channelId, result))
 	}()
+	prepared := a.takePreparedAsyncChild(request.RequestID)
+	if prepared != nil {
+		baseCtx = prepared.bindCancel(baseCtx)
+		defer a.finishBackgroundRun(prepared)
+	}
+	handedOff := false
+	defer func() {
+		if prepared != nil && !handedOff {
+			a.abandonAsyncChild(prepared, baseCtx, errors.New(result.Error))
+		}
+	}()
 
 	select {
 	case asyncRunCapacity <- struct{}{}:
@@ -266,7 +287,11 @@ func (a *AgentSession) executeAsyncEvent(event *types.Event) {
 		result.Error = baseCtx.Err().Error()
 		return
 	}
-	defer func() { <-asyncRunCapacity }()
+	releaseSlot := sync.OnceFunc(func() { <-asyncRunCapacity })
+	defer releaseSlot()
+	if prepared != nil {
+		prepared.releaseSlot = releaseSlot
+	}
 
 	timeout := request.Timeout
 	if timeout <= 0 {
@@ -290,7 +315,8 @@ func (a *AgentSession) executeAsyncEvent(event *types.Event) {
 			return err
 		})
 	case eventing.AsyncRunSubagent:
-		err = a.runAsyncSubagent(ctx, request, budget)
+		handedOff = true
+		err = a.runAsyncSubagent(ctx, request, budget, prepared)
 	case eventing.AsyncRunCommand:
 		// The command runs without the execution lock so it does not block
 		// the user's turns; only the turn that reads its output takes it.
@@ -427,33 +453,348 @@ func asyncStatus(err error, ctx context.Context) string {
 	return "failed"
 }
 
-func (a *AgentSession) runAsyncSubagent(ctx context.Context, request eventing.AsyncRunRequest, budget asyncBudget) error {
+// asyncChild is a built child that has not run yet.
+type asyncChild struct {
+	definition subagents.Definition
+	child      *AgentSession
+	resumed    *SubagentRun // the earlier run this one continues, if any
+
+	// done closes once the run's final event is in the log and any report is
+	// queued, which is all WaitSubagents needs.
+	done       chan struct{}
+	doneOnce   sync.Once
+	finishOnce sync.Once
+	// releaseSlot gives up the run's concurrency slot once its child has ended.
+	// Keeping it through the report would deadlock: the report needs a turn
+	// that may be waiting for a run that needs the slot.
+	releaseSlot func()
+
+	mu          sync.Mutex
+	cancel      context.CancelCauseFunc
+	cancelCause error
+}
+
+func (r *asyncChild) markDone() { r.doneOnce.Do(func() { close(r.done) }) }
+
+// requestCancel stops the run. A run still waiting for the executor stops as
+// soon as it binds its context.
+func (r *asyncChild) requestCancel(cause error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cancel != nil {
+		r.cancel(cause)
+	} else {
+		r.cancelCause = cause
+	}
+}
+
+func (r *asyncChild) bindCancel(parent context.Context) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ctx, cancel := context.WithCancelCause(parent)
+	r.cancel = cancel
+	if r.cancelCause != nil {
+		cancel(r.cancelCause)
+	}
+	return ctx
+}
+
+// finishBackgroundRun forgets a run that has ended, releasing its context.
+func (a *AgentSession) finishBackgroundRun(run *asyncChild) {
+	run.finishOnce.Do(func() {
+		a.asyncOwnedMu.Lock()
+		delete(a.backgroundRuns, run.child.ChannelID())
+		a.asyncOwnedMu.Unlock()
+		run.markDone()
+		run.requestCancel(context.Canceled)
+		a.backgroundWG.Done()
+	})
+}
+
+// subagentReport tells the session's model how a background run ended.
+type subagentReport struct {
+	childID   string
+	text      string
+	delivered chan struct{}
+}
+
+// reportBackgroundRun queues text for the next report turn, frees the run's
+// slot, and waits for the report to be delivered.
+func (a *AgentSession) reportBackgroundRun(ctx context.Context, run *asyncChild, text string) {
+	// Stopping the launching turn waits for this run's work, and the report
+	// needs the lock that turn still holds.
+	finishOwnedWork(ctx)
+	report := &subagentReport{childID: run.child.ChannelID(), text: text, delivered: make(chan struct{})}
+	a.reportMu.Lock()
+	a.pendingReports = append(a.pendingReports, report)
+	if !a.reportDraining {
+		a.reportDraining = true
+		a.asyncWG.Add(1)
+		go a.drainSubagentReports()
+	}
+	a.reportMu.Unlock()
+	run.markDone()
+	if run.releaseSlot != nil {
+		run.releaseSlot()
+	}
+	select {
+	case <-report.delivered:
+	case <-a.lifecycleCtx.Done():
+	}
+}
+
+// drainSubagentReports runs report turns until none are queued. Runs that end
+// together, or during a turn, share one report.
+func (a *AgentSession) drainSubagentReports() {
+	defer a.asyncWG.Done()
+	timer := time.NewTimer(subagentReportWindow)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-a.lifecycleCtx.Done():
+	}
+	for {
+		err := a.withExecutionContext(a.lifecycleCtx, a.runSubagentReportTurn)
+		a.reportMu.Lock()
+		if err != nil || len(a.pendingReports) == 0 {
+			a.reportDraining = false
+			a.reportMu.Unlock()
+			return
+		}
+		a.reportMu.Unlock()
+	}
+}
+
+// runSubagentReportTurn must hold the execution lock. It takes the queue under
+// that lock, so a WaitSubagents call in a turn cannot lose a report to it.
+func (a *AgentSession) runSubagentReportTurn() error {
+	a.reportMu.Lock()
+	reports := a.pendingReports
+	a.pendingReports = nil
+	a.reportMu.Unlock()
+	if len(reports) == 0 {
+		return nil
+	}
+	defer func() {
+		for _, report := range reports {
+			close(report.delivered)
+		}
+	}()
+	texts := make([]string, len(reports))
+	for i, report := range reports {
+		texts[i] = report.text
+	}
+	closing := "Report the result to the user concisely."
+	if len(reports) > 1 {
+		closing = "Report the results to the user concisely."
+	}
+	turnCtx, cancel := context.WithTimeout(a.lifecycleCtx, subagentReportTimeout)
+	defer cancel()
+	if _, err := a.callUntilStopUnlocked(turnCtx, strings.Join(texts, "\n\n---\n\n")+"\n\n"+closing, nil); err != nil {
+		a.logger.Warn("Failed to report background subagents: %v", err)
+	}
+	return nil
+}
+
+// claimSubagentReports removes the queued reports of runs whose results the
+// model has already read, so they start no turn.
+func (a *AgentSession) claimSubagentReports(childIDs map[string]bool) {
+	a.reportMu.Lock()
+	defer a.reportMu.Unlock()
+	a.pendingReports = slices.DeleteFunc(a.pendingReports, func(report *subagentReport) bool {
+		if !childIDs[report.childID] {
+			return false
+		}
+		close(report.delivered)
+		return true
+	})
+}
+
+// BackgroundSubagentsRunning counts background runs not yet reported.
+func (a *AgentSession) BackgroundSubagentsRunning() int {
+	a.asyncOwnedMu.Lock()
+	defer a.asyncOwnedMu.Unlock()
+	return len(a.backgroundRuns)
+}
+
+// WaitForBackgroundSubagents blocks until every background run has ended and
+// been reported, including runs a report turn starts. A one-shot process calls
+// it before exiting, which would otherwise kill them.
+func (a *AgentSession) WaitForBackgroundSubagents(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		a.backgroundWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// newAsyncChild builds the child for request from a snapshot of the parent's
+// runtime. The caller must hold the execution lock, which serializes the
+// snapshot with model changes, /clear, and integration installation. Only
+// construction needs the lock; the child's tools and model calls run
+// independently of the conversation.
+func (a *AgentSession) newAsyncChild(ctx context.Context, request eventing.AsyncRunRequest) (*asyncChild, error) {
+	a.integrationMu.Lock()
+	defer a.integrationMu.Unlock()
+	definition := subagents.Definition{Name: "background", Description: "Runs an isolated background task", Mode: "subagent", SystemPrompt: a.systemPrompt}
+	prefix := "background"
+	if name := strings.TrimSpace(request.Agent); name != "" {
+		var err error
+		if definition, err = a.loadEnabledSubagent(name); err != nil {
+			return nil, err
+		}
+		if !definition.ReadOnly() {
+			return nil, fmt.Errorf("subagent %q cannot run in the background because it can change files; set its permission to deny both edit and bash, or run it without background", definition.Name)
+		}
+		prefix = "subagent-" + definition.Name
+	}
+	registry := SubagentToolRegistry(a, definition).WithLivePermissionsFrom(a.ToolRegistry())
+	child, err := a.NewSubagentChildSession(ctx, definition, SubagentChildOptions{Prefix: prefix, ModelRefOverride: strings.TrimSpace(request.Model), ReasoningEffort: strings.TrimSpace(request.ReasoningEffort), Limits: request.ContextLimits, ToolRegistry: registry, IsolatedExecution: true, ResumeChildID: request.ResumeChild})
+	if err != nil {
+		return nil, err
+	}
+	return &asyncChild{definition: definition, child: child, done: make(chan struct{})}, nil
+}
+
+func (a *AgentSession) appendAsyncChildStarted(run *asyncChild, request eventing.AsyncRunRequest) error {
+	model := firstNonEmpty(request.Model, run.definition.Model)
+	reasoning := firstNonEmpty(request.ReasoningEffort, run.definition.Reasoning)
+	return a.AppendAuditEvent(eventing.NewSubagentInvocationStartedWithConfig(a.ChannelID(), run.definition.Name, run.child.ChannelID(), a.ChannelID(), strings.TrimSpace(request.Prompt), model, reasoning, run.child.ContextWindow()))
+}
+
+func (a *AgentSession) appendAsyncChildStopped(run *asyncChild, ctx context.Context, err error) {
+	_ = a.AppendAuditEvent(eventing.NewSubagentInvocationStopped(a.ChannelID(), run.definition.Name, run.child.ChannelID(), a.ChannelID(), err.Error(), a.subagentStopReason(ctx, err), run.child.EstimatedContextTokens(), run.child.ContextWindow()))
+}
+
+// abandonAsyncChild ends a prepared child that will never run. Its Started
+// event is already in the log, so it needs a final event too.
+func (a *AgentSession) abandonAsyncChild(run *asyncChild, ctx context.Context, err error) {
+	a.appendAsyncChildStopped(run, ctx, err)
+	_ = run.child.Close()
+	a.finishBackgroundRun(run)
+}
+
+// reportAsyncSubagentFailure gives the session a turn to learn that a named
+// run failed, since otherwise the model still expects its result. A cancelled
+// or closed run gets no turn: whoever stopped it already knows.
+func (a *AgentSession) reportAsyncSubagentFailure(ctx context.Context, request eventing.AsyncRunRequest, run *asyncChild, err error) {
+	reason := a.subagentStopReason(ctx, err)
+	if request.Agent == "" || (reason != eventing.SubagentStopError && reason != eventing.SubagentStopTimeout) {
+		return
+	}
+	a.reportBackgroundRun(ctx, run, fmt.Sprintf("Background subagent %q ended without a result: %s.\n\nChild session ID: %s\n\nTask:\n%s\n\nError:\n%s", run.definition.Name, stoppedRunStatus(reason), run.child.ChannelID(), strings.TrimSpace(request.Prompt), err))
+}
+
+func (a *AgentSession) takePreparedAsyncChild(requestID string) *asyncChild {
+	a.asyncOwnedMu.Lock()
+	defer a.asyncOwnedMu.Unlock()
+	run := a.asyncPrepared[requestID]
+	delete(a.asyncPrepared, requestID)
+	return run
+}
+
+// abandonPreparedAsyncChildren ends children whose request never reached the
+// executor because the session closed first.
+func (a *AgentSession) abandonPreparedAsyncChildren() {
+	a.asyncOwnedMu.Lock()
+	prepared := a.asyncPrepared
+	a.asyncPrepared = nil
+	a.asyncOwnedMu.Unlock()
+	for _, run := range prepared {
+		a.abandonAsyncChild(run, a.lifecycleCtx, errors.New("session closed before the run started"))
+	}
+}
+
+// startBackgroundSubagent starts a named agent without waiting for it. The
+// caller must hold the execution lock, as a tool call does through its turn.
+// The child is built here instead of in the executor, which would need that
+// same lock and so could not start until the turn ended.
+func (a *AgentSession) startBackgroundSubagent(ctx context.Context, opts SubagentRunOptions) (SubagentRunResult, error) {
+	opts, resumed, err := a.resolveSubagentResume(opts)
+	if err != nil {
+		return SubagentRunResult{}, err
+	}
+	name := strings.TrimSpace(opts.Name)
+	task := strings.TrimSpace(opts.Task)
+	if name == "" {
+		return SubagentRunResult{}, fmt.Errorf("subagent name must not be empty")
+	}
+	if task == "" {
+		return SubagentRunResult{}, fmt.Errorf("subagent task must not be empty")
+	}
+	request := eventing.AsyncRunRequest{
+		RequestID:       uuid.NewV4().String(),
+		Source:          asyncSubagentSource,
+		SourceID:        name,
+		Prompt:          task,
+		Mode:            eventing.AsyncRunSubagent,
+		Agent:           name,
+		ResumeChild:     opts.ResumeChildID,
+		Model:           strings.TrimSpace(opts.ModelRefOverride),
+		ReasoningEffort: strings.TrimSpace(opts.ReasoningEffort),
+	}
+	run, err := a.newAsyncChild(ctx, request)
+	if err != nil {
+		return SubagentRunResult{}, err
+	}
+	run.resumed = resumed
+	if err := a.appendAsyncChildStarted(run, request); err != nil {
+		_ = run.child.Close()
+		return SubagentRunResult{}, err
+	}
+	a.asyncOwnedMu.Lock()
+	if a.asyncPrepared == nil {
+		a.asyncPrepared = make(map[string]*asyncChild)
+	}
+	a.asyncPrepared[request.RequestID] = run
+	if a.backgroundRuns == nil {
+		a.backgroundRuns = make(map[string]*asyncChild)
+	}
+	a.backgroundRuns[run.child.ChannelID()] = run
+	a.backgroundWG.Add(1)
+	a.asyncOwnedMu.Unlock()
+	if err := a.PublishAsyncEvent(ctx, eventing.NewAsyncRunRequested(a.channelId, request)); err != nil {
+		if prepared := a.takePreparedAsyncChild(request.RequestID); prepared != nil {
+			a.abandonAsyncChild(prepared, ctx, err)
+		}
+		return SubagentRunResult{}, err
+	}
+	return SubagentRunResult{Name: run.definition.Name, Task: task, ChildSessionID: run.child.ChannelID()}, nil
+}
+
+// runAsyncSubagent runs the child and reports its result to the session.
+// prepared is the child built when the run was requested; without one it is
+// built here, which waits for any turn in progress.
+func (a *AgentSession) runAsyncSubagent(ctx context.Context, request eventing.AsyncRunRequest, budget asyncBudget, prepared *asyncChild) error {
 	task := strings.TrimSpace(request.Prompt)
 	if task == "" {
 		return fmt.Errorf("async subagent task must not be empty")
 	}
-	var definition subagents.Definition
-	var child *AgentSession
-	// Snapshot the parent's runtime while serialized with model changes, /clear,
-	// and integration installation. Only child construction needs this lock;
-	// the child's tools and model calls run independently of the conversation.
-	err := a.withExecutionContext(ctx, func() error {
-		a.integrationMu.Lock()
-		defer a.integrationMu.Unlock()
-		definition = subagents.Definition{Name: "background", Description: "Runs an isolated background task", Mode: "subagent", SystemPrompt: a.systemPrompt}
-		registry := SubagentToolRegistry(a, definition).WithLivePermissionsFrom(a.ToolRegistry())
-		var err error
-		child, err = a.NewSubagentChildSession(ctx, definition, SubagentChildOptions{Prefix: "background", ModelRefOverride: strings.TrimSpace(request.Model), ReasoningEffort: strings.TrimSpace(request.ReasoningEffort), Limits: request.ContextLimits, ToolRegistry: registry, IsolatedExecution: true})
-		return err
-	})
-	if err != nil {
-		return err
+	run := prepared
+	if run == nil {
+		err := a.withExecutionContext(ctx, func() error {
+			var err error
+			run, err = a.newAsyncChild(ctx, request)
+			return err
+		})
+		if err != nil {
+			return err
+		}
+		if err := a.appendAsyncChildStarted(run, request); err != nil {
+			_ = run.child.Close()
+			return err
+		}
 	}
+	definition, child := run.definition, run.child
 	defer func() { _ = child.Close() }()
-	if err := a.AppendAuditEvent(eventing.NewSubagentInvocationStarted(a.ChannelID(), definition.Name, child.ChannelID(), a.ChannelID(), task, child.ContextWindow())); err != nil {
-		return err
-	}
 	if err := RegisterSubagentProgressHandlers(a, child, definition.Name); err != nil {
+		a.appendAsyncChildStopped(run, ctx, err)
 		return err
 	}
 	childTask := task
@@ -461,11 +802,12 @@ func (a *AgentSession) runAsyncSubagent(ctx context.Context, request eventing.As
 		childTask = fmt.Sprintf("%s\n\nThe previous run of this task did not succeed. Change course if the same problem would recur:\n%s", task, request.PreviousRun)
 	}
 	callCtx, cancelCall := budget.modelContext(ctx, budget.left())
-	response, err := child.Call(callCtx, BuildSubagentPrompt(definition, childTask, a.ChannelID()))
+	response, err := child.Call(callCtx, buildSubagentRunPrompt(definition, childTask, a.ChannelID(), run.resumed))
 	err = timeoutError(callCtx, err)
 	cancelCall()
 	if err != nil {
-		_ = a.AppendAuditEvent(eventing.NewSubagentInvocationFailed(a.ChannelID(), definition.Name, child.ChannelID(), a.ChannelID(), err.Error(), child.EstimatedContextTokens(), child.ContextWindow()))
+		a.appendAsyncChildStopped(run, ctx, err)
+		a.reportAsyncSubagentFailure(ctx, request, run, err)
 		return err
 	}
 	result := responseText(response)
@@ -474,6 +816,10 @@ func (a *AgentSession) runAsyncSubagent(ctx context.Context, request eventing.As
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if request.Agent != "" {
+		a.reportBackgroundRun(ctx, run, fmt.Sprintf("Background subagent %q completed.\n\nChild session ID: %s\n\nTask:\n%s\n\nResult:\n%s", definition.Name, child.ChannelID(), task, result))
+		return nil
 	}
 	// Only the report turn takes the execution lock; its model phase starts
 	// once the lock is held, so waiting for a user turn is not charged.
@@ -558,10 +904,14 @@ func (a *AgentSession) Close() error {
 			a.asyncRequests.Close()
 		}
 		a.asyncWG.Wait()
+		a.abandonPreparedAsyncChildren()
 		if a.ownsSessionExecution && a.toolRegistry != nil {
 			if err := a.toolRegistry.CloseSessionExecution(); err != nil && closeErr == nil {
 				closeErr = err
 			}
+		}
+		if a.onClose != nil {
+			a.onClose()
 		}
 	})
 	return closeErr

@@ -445,7 +445,27 @@ type SubagentInvocation struct {
 	ContextTokens           int            `json:"context_tokens,omitempty"`
 	ContextWindow           int            `json:"context_window,omitempty"`
 	Stats                   *SubagentStats `json:"stats,omitempty"`
+	// Model and ReasoningEffort record what the child was configured with, so
+	// a later resume can keep them. Empty means it inherited the parent's.
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// StopReason says why a failed run ended; see the SubagentStop constants.
+	StopReason string `json:"stop_reason,omitempty"`
 }
+
+// Why a subagent run ended without a result.
+const (
+	SubagentStopUserCancelled = "user_cancelled"
+	// SubagentStopModelCancelled is the parent model stopping its own run,
+	// which unlike a user's cancel says nothing about the user's wishes.
+	SubagentStopModelCancelled = "model_cancelled"
+	SubagentStopSessionClosed  = "session_closed"
+	SubagentStopTimeout        = "timeout"
+	SubagentStopError          = "error"
+	// SubagentStopProcessExit is never stored. It is derived for a run with no
+	// final event, because the process died before it could write one.
+	SubagentStopProcessExit = "process_exit"
+)
 
 type SubagentStats struct {
 	PromptTokens       int64          `json:"prompt_tokens"`
@@ -467,6 +487,16 @@ func NewSubagentInvocationStartedWithPrompt(originatorID, name, childSessionID, 
 		Task:            task,
 		Prompt:          prompt,
 		ContextWindow:   contextWindow,
+	})
+}
+
+// NewSubagentInvocationStartedWithConfig also records the child's model and
+// reasoning effort, which a resume needs to keep the run's configuration.
+func NewSubagentInvocationStartedWithConfig(originatorID, name, childSessionID, parentSessionID, task, model, reasoningEffort string, contextWindow int) *types.Event {
+	return newSubagentInvocationEvent(originatorID, SubagentInvocationStarted, SubagentInvocation{
+		Name: name, ChildSessionID: childSessionID, ParentSessionID: parentSessionID,
+		Task: task, Prompt: task, ContextWindow: contextWindow,
+		Model: model, ReasoningEffort: reasoningEffort,
 	})
 }
 
@@ -509,6 +539,15 @@ func NewSubagentInvocationFailed(originatorID, name, childSessionID, parentSessi
 		Error:           errorMessage,
 		ContextTokens:   contextTokens,
 		ContextWindow:   contextWindow,
+	})
+}
+
+// NewSubagentInvocationStopped is a failed invocation that records why it
+// ended; stopReason is one of the SubagentStop constants.
+func NewSubagentInvocationStopped(originatorID, name, childSessionID, parentSessionID, errorMessage, stopReason string, contextTokens, contextWindow int) *types.Event {
+	return newSubagentInvocationEvent(originatorID, SubagentInvocationFailed, SubagentInvocation{
+		Name: name, ChildSessionID: childSessionID, ParentSessionID: parentSessionID,
+		Error: errorMessage, StopReason: stopReason, ContextTokens: contextTokens, ContextWindow: contextWindow,
 	})
 }
 

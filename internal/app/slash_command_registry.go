@@ -56,6 +56,9 @@ func newSlashCommandRegistry(cwd string, agentsDirs, allowedAgents []string, pro
 	if err := registry.Register(slashcmd.TasksCommand{}); err != nil {
 		return nil, err
 	}
+	if err := registry.Register(slashcmd.BackgroundCommand{}); err != nil {
+		return nil, err
+	}
 	if err := registry.Register(slashcmd.ThemeCommand{}); err != nil {
 		return nil, err
 	}
