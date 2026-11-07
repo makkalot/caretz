@@ -21,11 +21,16 @@ const (
 )
 
 type AsyncRunRequest struct {
-	RequestID       string         `json:"request_id"`
-	Source          string         `json:"source"`
-	SourceID        string         `json:"source_id,omitempty"`
-	Prompt          string         `json:"prompt"`
-	Mode            string         `json:"mode"`
+	RequestID string `json:"request_id"`
+	Source    string `json:"source"`
+	SourceID  string `json:"source_id,omitempty"`
+	Prompt    string `json:"prompt"`
+	Mode      string `json:"mode"`
+	// Agent names the agent definition an AsyncRunSubagent run uses. Empty runs
+	// a generic child with the session's system prompt.
+	Agent string `json:"agent,omitempty"`
+	// ResumeChild is the existing child session a resumed run continues.
+	ResumeChild     string         `json:"resume_child,omitempty"`
 	Model           string         `json:"model,omitempty"`
 	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 	ContextLimits   *ContextLimits `json:"context_limits,omitempty"`

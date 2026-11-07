@@ -221,6 +221,13 @@ func Parse(content []byte) (Frontmatter, string, error) {
 	return fm, parsed.Body, nil
 }
 
+// ReadOnly reports whether the agent is denied every tool that changes the
+// workspace. Bash counts because a shell command can write files.
+func (d Definition) ReadOnly() bool {
+	disabled := DisabledTools(d.Permission)
+	return disabled["Edit"] && disabled["Write"] && disabled["Bash"]
+}
+
 func DisabledTools(permission map[string]string) map[string]bool {
 	disabled := map[string]bool{}
 	for key, value := range permission {

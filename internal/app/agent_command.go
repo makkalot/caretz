@@ -416,11 +416,25 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		if result.ExitCode != 0 {
 			return result.ExitCode
 		}
-		return 0
+		return waitForBackgroundSubagents(ctx, session)
 	}
 
 	_, err = session.Call(context.Background(), prompt)
 	if err != nil {
+		output.Errorf(stderr, "%v", err)
+		return 1
+	}
+	return waitForBackgroundSubagents(ctx, session)
+}
+
+// waitForBackgroundSubagents keeps a process with no prompt to return to alive
+// until its background subagents have reported, because exiting would kill
+// them. It returns the exit code.
+func waitForBackgroundSubagents(ctx context.Context, session *agent.AgentSession) int {
+	if count := session.BackgroundSubagentsRunning(); count > 0 {
+		output.Notef(stderr, "waiting for %d background subagent(s) to finish", count)
+	}
+	if err := session.WaitForBackgroundSubagents(ctx); err != nil {
 		output.Errorf(stderr, "%v", err)
 		return 1
 	}

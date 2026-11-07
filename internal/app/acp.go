@@ -1945,7 +1945,7 @@ func acpToolKind(name string) string {
 		return "execute"
 	case "WebSearch", "WebFetch":
 		return "fetch"
-	case "CallSubagent":
+	case "CallSubagent", "ListSubagents", "CancelSubagent", "WaitSubagents":
 		return "subagent"
 	case "UpdateTasks", "ListTasks":
 		return "think"

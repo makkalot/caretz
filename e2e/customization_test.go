@@ -119,3 +119,45 @@ func TestCustomizationSubagent(t *testing.T) {
 		Stdout(story.Contains("The reviewer found no bugs")).
 		Saw(story.Contains("No bugs found"))
 }
+
+const readOnlySearcher = "---\n" +
+	"description: Searches the code.\n" +
+	"mode: subagent\n" +
+	"permission:\n" +
+	"  edit: deny\n" +
+	"  bash: deny\n" +
+	"---\n" +
+	"Search the code and report what you find.\n"
+
+func TestCustomizationBackgroundSubagentFinishesBeforeExit(t *testing.T) {
+	s := customization.Scenario(t, "a one-shot run waits for a specialist agent working in the background")
+	s.Given().
+		File(".caretz/agents/searcher.md", readOnlySearcher).
+		Model(story.Calls("CallSubagent", `{"agent":"searcher","task":"find the callers","background":true}`)).
+		// The parent and the child now run at once, so their replies can come in
+		// either order; they are the same text for that reason.
+		Model(story.Replies("Working on it")).
+		Model(story.Replies("Working on it").As("searcher")).
+		Model(story.Replies("The searcher found the callers"))
+	s.When().Ask("find the callers")
+	s.Then().
+		Succeeds().
+		RequestCount(4).
+		Stdout(story.Contains("The searcher found the callers")).
+		Stderr(story.Contains("waiting for 1 background subagent(s) to finish"))
+	s.Then().LastRequest().User(story.Contains(`Background subagent "searcher" completed.`))
+}
+
+func TestCustomizationBackgroundSubagentMustBeReadOnly(t *testing.T) {
+	s := customization.Scenario(t, "a specialist agent that can change files cannot work in the background")
+	s.Given().
+		File(".caretz/agents/fixer.md",
+			"---\ndescription: Fixes bugs.\nmode: subagent\n---\nFix the bug.\n").
+		Model(story.Calls("CallSubagent", `{"agent":"fixer","task":"fix it","background":true}`)).
+		Model(story.Replies("I cannot run that in the background"))
+	s.When().Ask("fix it in the background")
+	s.Then().
+		Succeeds().
+		RequestCount(2).
+		Saw(story.Contains("cannot run in the background"))
+}
