@@ -222,6 +222,10 @@ func bwrapArgsForContainerMode(workDir, binaryPath string, unrestrictedNetwork b
 		readOnlyRoots := append([]string{}, readableRoots...)
 		readOnlyRoots = append(readOnlyRoots, writableRoots...)
 		args, coveredBinds = appendReadOnlyRootBinds(args, readOnlyRoots, coveredBinds)
+		// Tool caches stay writable so builds and tests can reuse them.
+		if scratch, ok := readOnlyScratchDir(workDir); ok {
+			args = append(args, "--bind", scratch, scratch)
+		}
 	} else {
 		args = append(args, "--bind", workDir, workDir)
 		for _, root := range writableRoots {
@@ -236,8 +240,8 @@ func bwrapArgsForContainerMode(workDir, binaryPath string, unrestrictedNetwork b
 
 	args = append(args, []string{
 		"--setenv", "HOME", workDir,
-		"--setenv", "GOCACHE", filepath.Join(workDir, ".caretz", "scratch", "go-build"),
-		"--setenv", "GOPATH", filepath.Join(workDir, ".caretz", "scratch", "go"),
+		"--setenv", "GOCACHE", filepath.Join(ScratchDir(workDir), "go-build"),
+		"--setenv", "GOPATH", filepath.Join(ScratchDir(workDir), "go"),
 	}...)
 
 	if proxySocketDir != "" {

@@ -21,6 +21,9 @@ type Result struct {
 	ActiveReasoningSet    bool
 	NewSession            *agent.AgentSession
 	Exit                  bool
+	// SubagentLog, when set, is a subagent's conversation that a terminal
+	// client draws like the chat; Message holds the same log as plain text.
+	SubagentLog *agent.SubagentLog
 }
 
 type Command interface {

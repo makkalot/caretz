@@ -3,6 +3,7 @@ package app
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -548,14 +549,19 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	for _, skill := range discoveredSkills {
 		startupResources.Skills = append(startupResources.Skills, skill.Name)
 	}
+	// A broken agent file is skipped with a warning; the others still load.
 	configuredAgents, err := subagents.DiscoverFromDirs(agentsDirs)
-	if err != nil {
-		output.Warnf(stderr, "subagent discovery failed: %v", err)
-	} else {
-		configuredAgents = filterAgents(configuredAgents, profile.Agents)
-		for _, configuredAgent := range configuredAgents {
-			startupResources.Agents = append(startupResources.Agents, configuredAgent.Name)
+	var discoveryErr *subagents.DiscoveryError
+	if errors.As(err, &discoveryErr) {
+		for _, problem := range discoveryErr.Problems {
+			output.Warnf(stderr, "skipping subagent: %v", problem)
 		}
+	} else if err != nil {
+		output.Warnf(stderr, "subagent discovery failed: %v", err)
+	}
+	configuredAgents = filterAgents(configuredAgents, profile.Agents)
+	for _, configuredAgent := range configuredAgents {
+		startupResources.Agents = append(startupResources.Agents, configuredAgent.Name)
 	}
 
 	systemPrompt := skills.BuildSystemPromptWithOptions(skills.SystemPromptOptions{

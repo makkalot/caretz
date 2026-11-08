@@ -70,7 +70,31 @@ type scriptedCall struct {
 func New(t testing.TB) *Story {
 	t.Helper()
 	llm := fakellm.New(t)
-	return &Story{t: t, LLM: llm, Env: harness.New(t, llm.URL, fakellm.Model)}
+	s := &Story{t: t, LLM: llm, Env: harness.New(t, llm.URL, fakellm.Model)}
+	llm.Expand = s.expandRuns
+	return s
+}
+
+// expandRuns replaces each ResumesRun placeholder with the child session ID
+// of that agent's latest run.
+func (s *Story) expandRuns(arguments string) string {
+	if !strings.Contains(arguments, "$RUN(") {
+		return arguments
+	}
+	entries, _ := os.ReadDir(filepath.Join(s.Env.ConfigRoot, "sessions", "cli"))
+	for _, e := range entries {
+		name := e.Name()
+		i := strings.Index(name, "-subagent-")
+		if !e.IsDir() || i < 0 {
+			continue
+		}
+		// <parent>-subagent-<agent>-<nanoseconds>; later runs sort last.
+		rest := name[i+len("-subagent-"):]
+		if j := strings.LastIndex(rest, "-"); j > 0 {
+			arguments = strings.ReplaceAll(arguments, runPlaceholder(rest[:j]), name)
+		}
+	}
+	return arguments
 }
 
 // Given starts the setup phase.
@@ -94,6 +118,7 @@ func (s *Story) Then() *Then {
 type Part struct {
 	text string
 	call *fakellm.ToolCall
+	hang bool
 
 	speaker string  // "the assistant" unless As names an agent
 	verb    string  // what the speaker does: "runs:", "reads \"x\""
@@ -115,6 +140,22 @@ func (p Part) As(agent string) Part {
 	p.speaker = fmt.Sprintf("the %q agent", agent)
 	return p
 }
+
+// StillWorking is a reply that never comes, so caretz is mid-run when
+// When().AskAndKill kills it. Use it as the only part of its reply.
+func StillWorking() Part {
+	return Part{hang: true, verb: "is still working when caretz is killed"}
+}
+
+// ResumesRun is the assistant continuing agent's latest run with
+// CallSubagent. The child session ID is filled in when the reply is sent,
+// because caretz picks it at run time.
+func ResumesRun(agent string) Part {
+	args := map[string]any{"resume": runPlaceholder(agent)}
+	return toolPart("CallSubagent", args, fmt.Sprintf("resumes the %q agent's interrupted run", agent), nil, fmt.Sprintf("resuming the %q agent", agent))
+}
+
+func runPlaceholder(agent string) string { return "$RUN(" + agent + ")" }
 
 // RunsCommand is a shell command the assistant runs with the Bash tool.
 func RunsCommand(command string) Part {
@@ -201,6 +242,13 @@ func (g *Given) Model(parts ...Part) *Given {
 			subject = "in the same reply " + subject
 		}
 		g.s.record(phaseGiven, subject+" "+p.verb, p.doc)
+		if p.hang {
+			if len(parts) > 1 {
+				g.s.t.Fatal("story: StillWorking must be the only part of its reply")
+			}
+			turn.Hang = true
+			continue
+		}
 		if p.call == nil {
 			turn.Text += p.text
 			continue
@@ -344,6 +392,25 @@ func (w *When) Ask(prompt string, flags ...string) *When {
 	return w
 }
 
+// AskAndKill runs caretz -p prompt and kills the process with SIGKILL once it
+// reaches a StillWorking reply, as a crash would. Continue picks it up.
+func (w *When) AskAndKill(prompt string) *When {
+	w.s.t.Helper()
+	w.s.record(phaseWhen, fmt.Sprintf("I ask caretz %q and caretz is killed mid-run", prompt), nil)
+	w.s.Res = w.s.Env.RunUntilKilled(w.s.LLM.Hung(), "-p", prompt)
+	return w
+}
+
+// Repair runs `caretz session repair` on the session the previous run saved,
+// as a user does after a crash left a tool call without its result.
+func (w *When) Repair() *When {
+	w.s.t.Helper()
+	w.s.record(phaseWhen, "I repair that session", nil)
+	w.s.Res = w.s.Env.RunSubcommand("session", "repair", w.s.lastSession())
+	w.s.Res.Success()
+	return w
+}
+
 // Continue resumes the session the previous run saved, as `caretz -s <id>
 // -p prompt` does, with any extra flags after it.
 func (w *When) Continue(prompt string, flags ...string) *When {
@@ -372,7 +439,7 @@ func (s *Story) lastSession() string {
 	var latestTime int64
 	for _, e := range entries {
 		info, err := e.Info()
-		if err != nil || !e.IsDir() {
+		if err != nil || !e.IsDir() || isChildSession(e.Name(), entries) {
 			continue
 		}
 		if mod := info.ModTime().UnixNano(); latest == "" || mod > latestTime {
@@ -383,6 +450,17 @@ func (s *Story) lastSession() string {
 		s.t.Fatalf("story: no saved session in %s", dir)
 	}
 	return latest
+}
+
+// isChildSession reports whether name is a child of another saved session,
+// whose ID is the parent's followed by a suffix.
+func isChildSession(name string, entries []os.DirEntry) bool {
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(name, e.Name()+"-") {
+			return true
+		}
+	}
+	return false
 }
 
 // Run runs caretz with args after the harness's endpoint, workspace, and

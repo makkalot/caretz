@@ -110,6 +110,33 @@ func (o *CLIOutput) customRendering(msg llm.Message, toolName string) (string, b
 	return "", false
 }
 
+// RenderSubagentLog draws a subagent's recent conversation the way the chat
+// draws a live turn, in the current compact or detailed mode, under a header
+// naming the run.
+func (o *CLIOutput) RenderSubagentLog(log agent.SubagentLog) {
+	header, details, _ := strings.Cut(agent.SubagentLogHeader(log.Run), "\n")
+	_, _ = fmt.Fprintf(os.Stderr, "\n%s\n", o.stderrStyle.Agent(header))
+	if details != "" {
+		_, _ = fmt.Fprintln(os.Stderr, o.stderrStyle.Muted(details))
+	}
+	_, _ = fmt.Fprintln(os.Stderr, o.stderrStyle.Rule(RuleWidth))
+	if len(log.Entries) == 0 {
+		_, _ = fmt.Fprintln(os.Stderr, o.stderrStyle.Muted("no activity yet"))
+		return
+	}
+	// The log is its own block, so the first entry draws no separator.
+	o.compactHasOutput = false
+	for _, entry := range log.Entries {
+		if entry.Final && o.mode == ModeCompact {
+			o.beginCompactBlock()
+			_, _ = fmt.Fprint(os.Stderr, o.stderrMarkdown.Render(entry.Message.Content))
+			_, _ = fmt.Fprintln(os.Stderr)
+			continue
+		}
+		o.renderMessageWithTool(entry.Message, entry.Tool)
+	}
+}
+
 // FormatCommandResult renders a slash-command result with the same Markdown
 // rules and terminal width used for other interactive stderr output.
 func (o *CLIOutput) FormatCommandResult(message string) string {

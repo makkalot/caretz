@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/makkalot/caretz/internal/log"
+	"github.com/makkalot/caretz/internal/sandbox"
 	"github.com/makkalot/caretz/internal/tools"
 	"github.com/makkalot/caretz/lib/eventing"
 	"github.com/makkalot/caretz/lib/llm"
@@ -61,9 +62,30 @@ func (p *backgroundChildProvider) ChatContext(ctx context.Context, systemPrompt 
 	return p.chat(ctx)
 }
 
+const testerAgent = `---
+description: Run tests and inspect history.
+mode: subagent
+model: child
+plan: true
+---
+
+You run read-only commands.
+`
+
 func newBackgroundSession(t *testing.T, parent, child llm.Provider, agents map[string]string) *AgentSession {
 	t.Helper()
-	workspace := t.TempDir()
+	return newBackgroundSessionWithRegistry(t, parent, child, agents, nil)
+}
+
+// newBackgroundSessionWithRegistry uses registry, with its workspace replaced,
+// so a test can stub the sandbox runner.
+func newBackgroundSessionWithRegistry(t *testing.T, parent, child llm.Provider, agents map[string]string, registry *tools.Registry) *AgentSession {
+	t.Helper()
+	// Resolve symlinks such as macOS /var, which file tools refuse to write through.
+	workspace, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := filepath.Join(workspace, ".caretz", "agents")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -74,9 +96,13 @@ func newBackgroundSession(t *testing.T, parent, child llm.Provider, agents map[s
 		}
 	}
 	logger := log.New()
+	if registry == nil {
+		registry = &tools.Registry{}
+	}
+	registry.Logger, registry.WorkspaceDir = logger, workspace
 	session, err := NewAgentSession("test", "parent", SessionParams{
 		BaseDir: filepath.Join(t.TempDir(), "sessions"), WorkspaceDir: workspace, Logger: logger, Provider: parent,
-		ToolRegistry: &tools.Registry{Logger: logger, WorkspaceDir: workspace}, SystemPrompt: "parent prompt",
+		ToolRegistry: registry, SystemPrompt: "parent prompt",
 		ContextWindow: 128000, ReservedTokens: 16384, KeepRecentTokens: 20000,
 	})
 	if err != nil {
@@ -198,6 +224,168 @@ func TestBackgroundSubagentUsesItsAgentDefinition(t *testing.T) {
 	}
 }
 
+// A plan subagent in the background keeps Bash, which runs with the
+// workspace read-only, and approvals it would need are denied at once
+// instead of waiting for an answer no one gives.
+func TestBackgroundSubagentRunsBashReadOnlyAndApprovalsAreDenied(t *testing.T) {
+	var mu sync.Mutex
+	var runs []sandbox.RunOptions
+	var networkAllowed []bool
+	registry := &tools.Registry{RunSandboxedOptions: func(ctx context.Context, _, _ string, opts sandbox.RunOptions) (string, string, error) {
+		allowed, err := opts.AuthorizeNetwork(ctx, "api.example.com:443")
+		mu.Lock()
+		runs = append(runs, opts)
+		networkAllowed = append(networkAllowed, allowed && err == nil)
+		mu.Unlock()
+		return "abc123 last commit\n", "", nil
+	}}
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	readArgs, err := json.Marshal(map[string]string{"file_path": outside})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	child := &backgroundChildProvider{}
+	child.chat = func(context.Context) (llm.Response, error) {
+		calls++
+		switch calls {
+		case 1:
+			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+				{ID: "bash-1", Name: "Bash", Arguments: `{"command":"git log -1"}`},
+				{ID: "read-1", Name: "Read", Arguments: string(readArgs)},
+			}}}, nil
+		default:
+			return asyncTestResponse("done"), nil
+		}
+	}
+	parent := &asyncSubagentProvider{chat: func(context.Context, []llm.Message) (llm.Response, error) { return asyncTestResponse("ok"), nil }}
+	session := newBackgroundSessionWithRegistry(t, parent, child, map[string]string{"tester": testerAgent}, registry)
+	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
+
+	if _, err := session.startBackgroundSubagent(t.Context(), SubagentRunOptions{Name: "tester", Task: "show the last commit"}); err != nil {
+		t.Fatal(err)
+	}
+	awaitAsyncResult(t, completed, "succeeded")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(runs) != 1 || !runs[0].ReadOnly {
+		t.Fatalf("sandbox runs = %+v, want one read-only run", runs)
+	}
+	if networkAllowed[0] {
+		t.Fatal("network approval was granted to a background subagent")
+	}
+	child.mu.Lock()
+	defer child.mu.Unlock()
+	if !slices.Contains(child.tools, "Bash") || slices.Contains(child.tools, "Edit") || slices.Contains(child.tools, "Write") {
+		t.Fatalf("child tools = %v", child.tools)
+	}
+	var readResult string
+	for _, message := range child.messages {
+		if message.Role == llm.RoleTool && message.ToolCallID == "read-1" {
+			readResult = message.Content
+		}
+	}
+	if !strings.Contains(readResult, "background subagents cannot ask for approval") {
+		t.Fatalf("read result = %q", readResult)
+	}
+}
+
+// Models often send booleans as strings, such as "True"; that must still
+// start a background run rather than fail the call.
+func TestCallSubagentAcceptsStringBackground(t *testing.T) {
+	child := &backgroundChildProvider{chat: func(context.Context) (llm.Response, error) { return asyncTestResponse("done"), nil }}
+	parent := &asyncSubagentProvider{chat: func(context.Context, []llm.Message) (llm.Response, error) { return asyncTestResponse("ok"), nil }}
+	session := newBackgroundSession(t, parent, child, map[string]string{"search": readOnlyAgent})
+	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
+
+	call := llm.ToolCall{ID: "call-1", Name: callSubagentToolName, Arguments: `{"agent":"search","task":"find callers","background":"True"}`}
+	result, err := session.handleCallSubagentToolCall(t.Context(), call)
+	if err != nil || !strings.Contains(result.Content, "started in the background") {
+		t.Fatalf("result = %q, err = %v", result.Content, err)
+	}
+	awaitAsyncResult(t, completed, "succeeded")
+}
+
+// A background run's activity stays out of the chat; /bg log reads it back
+// from the child's log, newest lines last.
+func TestBackgroundSubagentActivityIsInTheLogNotTheChat(t *testing.T) {
+	var calls int
+	child := &backgroundChildProvider{}
+	child.chat = func(context.Context) (llm.Response, error) {
+		calls++
+		if calls == 1 {
+			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+				{ID: "ls-1", Name: "Ls", Arguments: `{"path":"."}`},
+			}}}, nil
+		}
+		return asyncTestResponse("found 3 callers"), nil
+	}
+	parent := &asyncSubagentProvider{chat: func(context.Context, []llm.Message) (llm.Response, error) { return asyncTestResponse("ok"), nil }}
+	session := newBackgroundSession(t, parent, child, map[string]string{"search": readOnlyAgent})
+	progress := subscribeAsyncTest(t, session, eventing.SubagentInvocationProgress)
+	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
+
+	started, err := session.startBackgroundSubagent(t.Context(), SubagentRunOptions{Name: "search", Task: "find callers"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitAsyncResult(t, completed, "succeeded")
+	select {
+	case event := <-progress:
+		t.Fatalf("background run streamed progress into the chat: %s", event.Payload)
+	default:
+	}
+
+	log, err := session.SubagentRunLog("search", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if log.Run.ChildSessionID != started.ChildSessionID {
+		t.Fatalf("run = %+v, want %s", log.Run, started.ChildSessionID)
+	}
+	// The last two entries: the Ls result, paired with its call, and the answer.
+	if len(log.Entries) != 2 {
+		t.Fatalf("entries = %+v", log.Entries)
+	}
+	result, answer := log.Entries[0], log.Entries[1]
+	if result.Message.Role != llm.RoleTool || result.Tool.Name != "Ls" || !answer.Final || answer.Message.Content != "found 3 callers" {
+		t.Fatalf("entries = %+v", log.Entries)
+	}
+	if lines := SubagentLogLines(log.Entries); len(lines) != 2 || !strings.HasPrefix(lines[0], "tool result Ls: ") || lines[1] != "result: found 3 callers" {
+		t.Fatalf("plain lines = %q", lines)
+	}
+
+	all, err := session.SubagentRunLog(started.ChildSessionID, 0)
+	if err != nil || len(all.Entries) != 3 || all.Entries[0].Message.Role != llm.RoleAssistant || len(all.Entries[0].Message.ToolCalls) != 1 {
+		t.Fatalf("by child ID: entries = %+v, err = %v", all.Entries, err)
+	}
+	if text := FormatSubagentRunLog(all); !strings.Contains(text, "search: completed") || !strings.Contains(text, "  tool call Ls(") {
+		t.Fatalf("plain text:\n%s", text)
+	}
+	if _, err := session.SubagentRunLog("missing", 5); err == nil {
+		t.Fatal("an unknown run should be an error")
+	}
+}
+
+func TestLenientBool(t *testing.T) {
+	for input, want := range map[string]bool{`true`: true, `false`: false, `"True"`: true, `"false"`: false, `"1"`: true, `"0"`: false, `""`: false} {
+		var got lenientBool
+		if err := json.Unmarshal([]byte(input), &got); err != nil || bool(got) != want {
+			t.Errorf("%s: got %v, err %v, want %v", input, got, err, want)
+		}
+	}
+	for _, input := range []string{`"maybe"`, `3`, `{}`} {
+		var got lenientBool
+		if err := json.Unmarshal([]byte(input), &got); err == nil {
+			t.Errorf("%s: want an error", input)
+		}
+	}
+}
+
 func TestBackgroundSubagentRefusals(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -205,7 +393,6 @@ func TestBackgroundSubagentRefusals(t *testing.T) {
 		allowed map[string]bool
 		wantErr string
 	}{
-		{name: "can change files", agent: "writer", wantErr: "cannot run in the background"},
 		{name: "unknown agent", agent: "missing", wantErr: "not found"},
 		{name: "not in the profile", agent: "search", allowed: map[string]bool{"writer": true}, wantErr: "not enabled by the active profile"},
 	}
@@ -231,7 +418,7 @@ func TestBackgroundSubagentRefusals(t *testing.T) {
 	}
 }
 
-// A writer agent can still run in the foreground; only background is limited.
+// A writer agent can still run in the foreground.
 func TestWriterAgentStillRunsInForeground(t *testing.T) {
 	child := &backgroundChildProvider{chat: func(context.Context) (llm.Response, error) { return asyncTestResponse("changed"), nil }}
 	parent := &asyncSubagentProvider{chat: func(context.Context, []llm.Message) (llm.Response, error) { return asyncTestResponse("ok"), nil }}
@@ -239,6 +426,89 @@ func TestWriterAgentStillRunsInForeground(t *testing.T) {
 	run, err := session.RunSubagent(t.Context(), SubagentRunOptions{Name: "writer", Task: "change it"})
 	if err != nil || run.Result != "changed" {
 		t.Fatalf("run = %+v, error = %v", run, err)
+	}
+}
+
+// Background is how a subagent runs, not what it may do: an agent without
+// plan: true keeps Edit and Write in the background and changes the
+// workspace, but still cannot start Bash background jobs.
+func TestBackgroundSubagentWithoutPlanCanWrite(t *testing.T) {
+	var calls int
+	child := &backgroundChildProvider{}
+	child.chat = func(context.Context) (llm.Response, error) {
+		calls++
+		if calls == 1 {
+			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+				{ID: "write-1", Name: "Write", Arguments: `{"file_path":"hello.txt","content":"hi"}`},
+				{ID: "bash-1", Name: "Bash", Arguments: `{"command":"sleep 5","background":true}`},
+			}}}, nil
+		}
+		return asyncTestResponse("done"), nil
+	}
+	parent := &asyncSubagentProvider{chat: func(context.Context, []llm.Message) (llm.Response, error) { return asyncTestResponse("ok"), nil }}
+	registry := &tools.Registry{SessionExec: true, RunSandboxedOptions: func(context.Context, string, string, sandbox.RunOptions) (string, string, error) {
+		t.Error("background Bash job reached the sandbox")
+		return "", "", nil
+	}}
+	session := newBackgroundSessionWithRegistry(t, parent, child, map[string]string{"writer": writerAgent}, registry)
+	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
+
+	if _, err := session.startBackgroundSubagent(t.Context(), SubagentRunOptions{Name: "writer", Task: "create hello.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	awaitAsyncResult(t, completed, "succeeded")
+
+	child.mu.Lock()
+	defer child.mu.Unlock()
+	if data, err := os.ReadFile(filepath.Join(session.workspaceDir, "hello.txt")); err != nil || string(data) != "hi" {
+		t.Fatalf("hello.txt = %q, err = %v", data, err)
+	}
+	if !slices.Contains(child.tools, "Edit") || !slices.Contains(child.tools, "Write") {
+		t.Fatalf("child tools = %v", child.tools)
+	}
+	var bashResult string
+	for _, message := range child.messages {
+		if message.Role == llm.RoleTool && message.ToolCallID == "bash-1" {
+			bashResult = message.Content
+		}
+	}
+	if !strings.Contains(bashResult, "not available in a background subagent") {
+		t.Fatalf("bash result = %q", bashResult)
+	}
+}
+
+// plan: true makes a subagent read-only in the foreground too.
+func TestPlanSubagentIsReadOnlyInForeground(t *testing.T) {
+	var runs []sandbox.RunOptions
+	registry := &tools.Registry{RunSandboxedOptions: func(_ context.Context, _, _ string, opts sandbox.RunOptions) (string, string, error) {
+		runs = append(runs, opts)
+		return "ok", "", nil
+	}}
+	var calls int
+	child := &backgroundChildProvider{}
+	child.chat = func(context.Context) (llm.Response, error) {
+		calls++
+		if calls == 1 {
+			return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{
+				{ID: "bash-1", Name: "Bash", Arguments: `{"command":"go test ./..."}`},
+			}}}, nil
+		}
+		return asyncTestResponse("done"), nil
+	}
+	parent := &asyncSubagentProvider{chat: func(context.Context, []llm.Message) (llm.Response, error) { return asyncTestResponse("ok"), nil }}
+	session := newBackgroundSessionWithRegistry(t, parent, child, map[string]string{"tester": testerAgent}, registry)
+	if _, err := session.RunSubagent(t.Context(), SubagentRunOptions{Name: "tester", Task: "run tests"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || !runs[0].ReadOnly {
+		t.Fatalf("sandbox runs = %+v, want one read-only run", runs)
+	}
+	child.mu.Lock()
+	defer child.mu.Unlock()
+	for _, denied := range []string{"Edit", "Write", "SendFile"} {
+		if slices.Contains(child.tools, denied) {
+			t.Fatalf("plan subagent was given %s: %v", denied, child.tools)
+		}
 	}
 }
 

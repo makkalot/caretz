@@ -148,16 +148,49 @@ func TestCustomizationBackgroundSubagentFinishesBeforeExit(t *testing.T) {
 	s.Then().LastRequest().User(story.Contains(`Background subagent "searcher" completed.`))
 }
 
-func TestCustomizationBackgroundSubagentMustBeReadOnly(t *testing.T) {
-	s := customization.Scenario(t, "a specialist agent that can change files cannot work in the background")
+func TestCustomizationSubagentResumesAfterCaretzIsKilled(t *testing.T) {
+	s := customization.Scenario(t, "a specialist agent cut short by a crash picks up where it stopped")
+	s.Given().
+		File(".caretz/agents/searcher.md", readOnlySearcher).
+		Model(story.Delegates("searcher", "find the callers")).
+		Model(story.StillWorking().As("searcher")).
+		Model(story.Calls("ListSubagents", `{}`).ID("list")).
+		Model(story.ResumesRun("searcher")).
+		Model(story.Replies("Found 3 callers").As("searcher")).
+		Model(story.Replies("The searcher found 3 callers"))
+	s.When().
+		AskAndKill("find the callers").
+		Repair().
+		Continue("finish finding the callers")
+	s.Then().
+		Succeeds().
+		RequestCount(6).
+		Stdout(story.Contains("The searcher found 3 callers")).
+		Saw(story.Contains("Found 3 callers"))
+	s.Then().LastRequest().
+		ToolResult("list", story.Contains("searcher: interrupted (process_exit)")).
+		ToolResult("list", story.Contains("resumable: yes"))
+	s.Then().Request(5).
+		User(story.Contains("Your earlier run ended as: interrupted")).
+		User(story.Contains("Original task:\nfind the callers"))
+}
+
+func TestCustomizationBackgroundSubagentCanChangeFiles(t *testing.T) {
+	s := customization.Scenario(t, "a specialist agent that can change files does so in the background")
 	s.Given().
 		File(".caretz/agents/fixer.md",
 			"---\ndescription: Fixes bugs.\nmode: subagent\n---\nFix the bug.\n").
 		Model(story.Calls("CallSubagent", `{"agent":"fixer","task":"fix it","background":true}`)).
-		Model(story.Replies("I cannot run that in the background"))
+		// The parent and the child run at once, so their first replies can come
+		// in either order; they are the same text for that reason.
+		Model(story.Replies("Working on it")).
+		Model(story.Writes("fixed.txt", "fixed").As("fixer")).
+		Model(story.Replies("Working on it").As("fixer")).
+		Model(story.Replies("The fixer fixed it"))
 	s.When().Ask("fix it in the background")
 	s.Then().
 		Succeeds().
-		RequestCount(2).
-		Saw(story.Contains("cannot run in the background"))
+		File("fixed.txt", story.Contains("fixed")).
+		Stdout(story.Contains("The fixer fixed it"))
+	s.Then().LastRequest().User(story.Contains(`Background subagent "fixer" completed.`))
 }

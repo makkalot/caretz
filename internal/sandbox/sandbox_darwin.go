@@ -162,6 +162,8 @@ func generateSandboxProfileForRun(cwd, tmpDir string, extraBinaries []string, un
 		for _, root := range writableRoots {
 			addPathWriteRules(&profile, root)
 		}
+	} else if scratch, ok := readOnlyScratchDir(cwd); ok {
+		addPathWriteRules(&profile, scratch)
 	}
 
 	if unrestrictedNetwork {
@@ -242,7 +244,7 @@ func dockerSocketPaths() []string {
 
 func macOSSandboxEnvironment(cwd, tmpDir string, proxy proxyEndpoints, allowDocker bool, grants map[string]string) []string {
 	envMap := environmentMap(os.Environ())
-	scratchDir := filepath.Join(cwd, ".caretz", "scratch")
+	scratchDir := ScratchDir(cwd)
 	env := []string{
 		"PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/nix/var/nix/profiles/default/bin",
 		"HOME=" + cwd,

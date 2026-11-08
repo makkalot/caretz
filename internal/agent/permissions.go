@@ -66,6 +66,25 @@ func (a *AgentSession) RequestPermission(ctx context.Context, call llm.ToolCall,
 	return a.requestPermission(ctx, call, denial)
 }
 
+type permissionsAutoDeniedKey struct{}
+
+// withAutoDeniedPermissions routes ctx's approval requests to a, which denies
+// them at once, and tells the agent loop to explain the denial to the model
+// as a background limit rather than a user decision. It returns ctx unchanged
+// for a session that can be asked.
+func (a *AgentSession) withAutoDeniedPermissions(ctx context.Context) context.Context {
+	if !a.nonInteractivePermissions {
+		return ctx
+	}
+	ctx = tools.WithPermissionRequester(ctx, a.requestPermission)
+	return context.WithValue(ctx, permissionsAutoDeniedKey{}, true)
+}
+
+func permissionsAutoDenied(ctx context.Context) bool {
+	denied, _ := ctx.Value(permissionsAutoDeniedKey{}).(bool)
+	return denied
+}
+
 type permissionPromptsKey struct{}
 
 // WithPermissionPrompts marks ctx as run by a client that answers
@@ -131,6 +150,15 @@ func (a *AgentSession) awaitPermission(ctx context.Context, request eventing.Per
 		delete(a.pendingPermissions, request.RequestID)
 		a.permissionMu.Unlock()
 		return eventing.PermissionResolution{}, err
+	}
+	// No one answers a background child, so record the request and deny it
+	// at once rather than block the run until it times out.
+	if a.nonInteractivePermissions {
+		resolution := eventing.PermissionResolution{RequestID: request.RequestID, Decision: eventing.PermissionDecisionDeny, Resolver: "background-auto-deny"}
+		if err := a.finishPermission(request.RequestID, resolution); err != nil {
+			return eventing.PermissionResolution{}, err
+		}
+		return <-pending.result, nil
 	}
 
 	// A nil expired channel never fires, so a zero timeout blocks until the

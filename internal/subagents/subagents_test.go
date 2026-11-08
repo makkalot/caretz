@@ -1,8 +1,10 @@
 package subagents
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,6 +109,34 @@ Body.`))
 	}
 }
 
+func TestParseSubagentPlan(t *testing.T) {
+	for _, tt := range []struct {
+		value   string
+		want    bool
+		wantErr bool
+	}{
+		{value: "", want: false},
+		{value: "true", want: true},
+		{value: "false", want: false},
+		{value: "maybe", wantErr: true},
+	} {
+		content := "---\ndescription: Reviews code\nmode: subagent\n"
+		if tt.value != "" {
+			content += "plan: " + tt.value + "\n"
+		}
+		fm, _, err := Parse([]byte(content + "---\nBody."))
+		if tt.wantErr {
+			if err == nil || !strings.Contains(err.Error(), "plan") {
+				t.Fatalf("plan %q: error = %v, want plan error", tt.value, err)
+			}
+			continue
+		}
+		if err != nil || fm.Plan != tt.want {
+			t.Fatalf("plan %q: Plan = %v, error = %v", tt.value, fm.Plan, err)
+		}
+	}
+}
+
 func TestDiscoverSubagents(t *testing.T) {
 	cwd := t.TempDir()
 	dir := AgentsDir(cwd)
@@ -167,6 +197,28 @@ func TestDiscoverFromDirsMergesAndOverridesByName(t *testing.T) {
 	}
 	if byName["review"].SystemPrompt != "Workspace review prompt." {
 		t.Fatalf("review prompt = %q, want workspace override", byName["review"].SystemPrompt)
+	}
+}
+
+// One broken file must not hide the other agents; discovery names it instead.
+func TestDiscoverFromDirsSkipsBrokenFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeSubagent(t, dir, "review", "Review prompt.")
+	broken := filepath.Join(dir, "searcher.md")
+	if err := os.WriteFile(broken, []byte("---\ndescription: Searches code. Use for \"find\n  all callers\".\nmode: subagent\n---\nSearch.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	defs, err := DiscoverFromDirs([]string{dir})
+	if len(defs) != 1 || defs[0].Name != "review" {
+		t.Fatalf("defs = %+v, want only review", defs)
+	}
+	var discoveryErr *DiscoveryError
+	if !errors.As(err, &discoveryErr) || len(discoveryErr.Problems) != 1 {
+		t.Fatalf("err = %v, want one skipped file", err)
+	}
+	if message := err.Error(); !strings.Contains(message, broken) || !strings.Contains(message, "line 3 continues") {
+		t.Fatalf("err = %q, want the file and line named", message)
 	}
 }
 

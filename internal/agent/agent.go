@@ -71,6 +71,10 @@ type AgentSession struct {
 	permissionResolutions   map[string]eventing.PermissionResolution
 	sessionPermissionGrants []sessionPermissionGrant
 	permissionTimeout       time.Duration
+	// nonInteractivePermissions denies approval requests as soon as they are
+	// recorded, for children that run with no one to answer, such as
+	// background subagents.
+	nonInteractivePermissions bool
 }
 
 type SubagentModelResolution struct {
@@ -120,6 +124,9 @@ type ChildSessionOptions struct {
 	// ResumeChannelID reopens that child session instead of creating one. Any
 	// turn its process did not finish is ended first, so it restores cleanly.
 	ResumeChannelID string
+	// NonInteractivePermissions denies the child's approval requests at once
+	// instead of waiting for an answer no one will give.
+	NonInteractivePermissions bool
 }
 
 type SessionParams struct {
@@ -808,6 +815,7 @@ func (a *AgentSession) NewChildSessionWithOptions(opts ChildSessionOptions) (*Ag
 		return nil, err
 	}
 	child.onClose = func() { a.releaseActiveChild(channelID) }
+	child.nonInteractivePermissions = opts.NonInteractivePermissions
 	child.inheritAgents(a)
 	child.SetAllowedAgents(a.AllowedAgents())
 	child.SetSubagentModelResolver(a.subagentModelResolver)
@@ -1187,6 +1195,10 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 				}
 				if requestErr != nil {
 					err = requestErr
+					break
+				}
+				if !allowed && permissionsAutoDenied(ctx) {
+					err = fmt.Errorf("permission denied: %s (background subagents cannot ask for approval; work without it or report what you need)", permissionErr.Target)
 					break
 				}
 				if !allowed {

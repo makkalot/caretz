@@ -44,11 +44,18 @@ func (r *Registry) handleBashToolCall(ctx context.Context, bashTool llm.ToolCall
 	}
 	// Read the mode once so a switch mid-call cannot mix plan and build rules.
 	planMode := r.PlanMode()
+	readOnly := r.WorkspaceReadOnly()
+	if args.Background && r.noBackgroundJobs {
+		return llm.Message{}, fmt.Errorf("background execution is not available in a background subagent; run the command in the foreground")
+	}
 	if args.Background && !r.SessionExec {
 		return llm.Message{}, fmt.Errorf("background execution is not available")
 	}
 	if args.Background && planMode {
 		return llm.Message{}, fmt.Errorf("background execution is not available in plan mode; run the command in the foreground, or ask the user to switch to build mode")
+	}
+	if args.Background && readOnly {
+		return llm.Message{}, fmt.Errorf("background execution is not available in a read-only workspace; run the command in the foreground")
 	}
 	if args.Background && args.TimeoutSeconds != nil {
 		return llm.Message{}, fmt.Errorf("background cannot be combined with timeout_seconds")
@@ -73,14 +80,14 @@ func (r *Registry) handleBashToolCall(ctx context.Context, bashTool llm.ToolCall
 	if !args.Background && r.canAskSandboxOff() && sandboxOffGranted(ctx, command) {
 		return r.runUnsandboxedBash(ctx, bashTool, cwd, command, timeoutSeconds)
 	}
-	// The live session keeps its writable policy, so plan mode runs each
-	// command in a fresh read-only sandbox instead.
-	if r.SessionExec && !planMode {
+	// The live session keeps its writable policy, so plan mode and read-only
+	// registries run each command in a fresh read-only sandbox instead.
+	if r.SessionExec && !readOnly {
 		return r.runSessionBash(ctx, bashTool, cwd, command, timeoutSeconds, args.Background)
 	}
 
 	authorizeNetwork := networkAuthorizer(ctx, bashTool, command)
-	stdout, stderr, err := r.runSandboxed(ctx, cwd, command, sandbox.RunOptions{TimeoutSeconds: timeoutSeconds, Env: ActorMetadataEnv(ctx), Background: args.Background, ReadOnly: planMode, AuthorizeNetwork: authorizeNetwork})
+	stdout, stderr, err := r.runSandboxed(ctx, cwd, command, sandbox.RunOptions{TimeoutSeconds: timeoutSeconds, Env: ActorMetadataEnv(ctx), Background: args.Background, ReadOnly: readOnly, AuthorizeNetwork: authorizeNetwork})
 
 	if err != nil {
 		if ctx.Err() != nil {
@@ -124,7 +131,7 @@ func WithForegroundRunner(ctx context.Context, run ForegroundRunner) context.Con
 }
 
 func (r *Registry) canAskSandboxOff() bool {
-	return r.AskSandboxOff && !r.SandboxDisabled && !r.PlanMode() && r.RunUnsandboxed != nil
+	return r.AskSandboxOff && !r.SandboxDisabled && !r.WorkspaceReadOnly() && r.RunUnsandboxed != nil
 }
 
 // sandboxOffGranted reports whether the user approved running this exact

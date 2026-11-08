@@ -227,6 +227,59 @@ func TestPlanModeBashRunsReadOnlyOutsideLiveSession(t *testing.T) {
 	}
 }
 
+// A registry without background jobs, as background subagents get, refuses
+// Bash background jobs but still runs foreground commands writable.
+func TestWithoutBackgroundJobsRefusesBackgroundBash(t *testing.T) {
+	var got sandbox.RunOptions
+	registry := (&Registry{
+		RunSandboxedOptions: func(_ context.Context, _, _ string, opts sandbox.RunOptions) (string, string, error) {
+			got = opts
+			return "ok", "", nil
+		},
+	}).WithoutBackgroundJobs()
+	if _, err := registry.HandleToolCall(llm.ToolCall{ID: "1", Name: "Bash", Arguments: `{"command":"sleep 1","background":true}`}); err == nil || !strings.Contains(err.Error(), "background subagent") {
+		t.Fatalf("background Bash err = %v", err)
+	}
+	result, err := registry.HandleToolCall(llm.ToolCall{ID: "2", Name: "Bash", Arguments: `{"command":"go generate ./..."}`})
+	if err != nil || result.Content != "ok" || got.ReadOnly {
+		t.Fatalf("result=%#v err=%v readOnly=%v", result, err, got.ReadOnly)
+	}
+}
+
+// A read-only registry, as plan subagents get, runs Bash like plan
+// mode but stays in build mode, so the model is never told it is planning.
+func TestReadOnlyWorkspaceRunsBashReadOnlyWithoutPlanMode(t *testing.T) {
+	var got sandbox.RunOptions
+	registry := (&Registry{
+		SessionExec:    true,
+		AskSandboxOff:  true,
+		RunUnsandboxed: func(context.Context, string, string, sandbox.RunOptions) (string, string, error) { return "", "", nil },
+		RunSandboxedOptions: func(_ context.Context, _, _ string, opts sandbox.RunOptions) (string, string, error) {
+			got = opts
+			return "ok", "", nil
+		},
+	}).WithReadOnlyWorkspace()
+	if registry.PlanMode() || !registry.WorkspaceReadOnly() {
+		t.Fatalf("plan=%v readOnly=%v", registry.PlanMode(), registry.WorkspaceReadOnly())
+	}
+	if registry.canAskSandboxOff() {
+		t.Fatal("a read-only registry must not offer to run outside the sandbox")
+	}
+	result, err := registry.HandleToolCall(llm.ToolCall{ID: "1", Name: "Bash", Arguments: `{"command":"git log -1"}`})
+	if err != nil || result.Content != "ok" || !got.ReadOnly {
+		t.Fatalf("result=%#v err=%v readOnly=%v", result, err, got.ReadOnly)
+	}
+	if _, err := registry.HandleToolCall(llm.ToolCall{ID: "2", Name: "Bash", Arguments: `{"command":"sleep 1","background":true}`}); err == nil || !strings.Contains(err.Error(), "read-only workspace") {
+		t.Fatalf("background Bash err = %v", err)
+	}
+	if _, err := registry.HandleToolCall(llm.ToolCall{ID: "3", Name: "Write", Arguments: `{"file_path":"x","content":"y"}`}); err == nil || !strings.Contains(err.Error(), "plan: true") {
+		t.Fatalf("Write err = %v", err)
+	}
+	if clone := registry.WithDisabledTools(map[string]bool{"Edit": true}); !clone.WorkspaceReadOnly() {
+		t.Fatal("clones must stay read-only")
+	}
+}
+
 func TestPlanModeSwitchReachesBashButNotClones(t *testing.T) {
 	var readOnly atomic.Bool
 	registry := &Registry{

@@ -14,6 +14,7 @@ Run `/help` to see every command. These are the ones you will use most:
 /allow-model provider/model     allow a model in this directory
 /context                        check current context usage
 /tasks                          show this session's task list
+/bg                             list subagent runs; /bg log <name> shows one's activity
 /compact                        summarize older conversation turns
 /clear                          start a fresh sibling session
 /theme                          preview and switch color themes

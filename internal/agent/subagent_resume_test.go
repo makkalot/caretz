@@ -151,9 +151,11 @@ func writeCrashedChild(t *testing.T, fixture *resumeFixture, session *AgentSessi
 	return childID
 }
 
-// The full scenario: the process dies, the session resumes, and the model sees
-// the run through ListSubagents and continues it through CallSubagent.
-func TestResumeAfterACrashAcrossASessionResume(t *testing.T) {
+// The process-kill scenario itself, with ListSubagents and a resume through
+// CallSubagent, is the e2e test TestCustomizationSubagentResumesAfterCaretzIsKilled.
+// This covers what it cannot reach: the reopen notice, which only the TUI
+// prints, and a child that died between a tool call and its result.
+func TestInterruptedNoticeAndChildRepairAfterACrash(t *testing.T) {
 	child := &backgroundChildProvider{chat: func(context.Context) (llm.Response, error) { return asyncTestResponse("found 3 callers"), nil }}
 	fixture := newResumeFixture(t, child, map[string]string{"search": readOnlyAgent})
 	first := fixture.open(t)
@@ -166,15 +168,6 @@ func TestResumeAfterACrashAcrossASessionResume(t *testing.T) {
 	notice, err := session.InterruptedSubagentNotice()
 	if err != nil || !strings.Contains(notice, "search") {
 		t.Fatalf("notice = %q, error = %v", notice, err)
-	}
-	list, err := callSessionTool(t, session, listSubagentsToolName, map[string]any{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"search: interrupted (process_exit)", childID, "resumable: yes"} {
-		if !strings.Contains(list, want) {
-			t.Fatalf("list lacks %q:\n%s", want, list)
-		}
 	}
 
 	output, err := callSessionTool(t, session, callSubagentToolName, map[string]any{"resume": childID})
@@ -283,7 +276,6 @@ func TestResumeRefusals(t *testing.T) {
 		{name: "goal child", opts: SubagentRunOptions{ResumeChildID: "parent-goal-worker-3"}, start: session.RunSubagent, wantErr: "no subagent run of this session"},
 		{name: "wrong agent", opts: SubagentRunOptions{ResumeChildID: searchID, Name: "writer"}, start: session.RunSubagent, wantErr: `belongs to subagent "search"`},
 		{name: "agent file deleted", opts: SubagentRunOptions{ResumeChildID: "parent-subagent-gone-6"}, start: session.RunSubagent, wantErr: "not found"},
-		{name: "writer in the background", opts: SubagentRunOptions{ResumeChildID: "parent-subagent-writer-5"}, start: session.startBackgroundSubagent, wantErr: "cannot run in the background"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

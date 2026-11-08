@@ -36,6 +36,9 @@ func parseBlock(block string) (map[string]string, map[string]map[string]string, 
 	fields := map[string]string{}
 	maps := map[string]map[string]string{}
 	var currentMap string
+	// lastValueKey is the top-level key whose value is on the previous line,
+	// so an indented or colon-less line after it reads as a wrapped value.
+	var lastValueKey string
 
 	for lineNo, rawLine := range strings.Split(block, "\n") {
 		if strings.TrimSpace(rawLine) == "" || strings.HasPrefix(strings.TrimSpace(rawLine), "#") {
@@ -43,6 +46,10 @@ func parseBlock(block string) (map[string]string, map[string]map[string]string, 
 		}
 		indent := leadingSpaces(rawLine)
 		line := strings.TrimSpace(rawLine)
+		_, _, hasColon := strings.Cut(line, ":")
+		if lastValueKey != "" && (indent > 0 || !hasColon) {
+			return nil, nil, fmt.Errorf("line %d continues the value of %q from the line before; frontmatter values must stay on one line", lineNo+1, lastValueKey)
+		}
 		if strings.HasPrefix(line, "-") {
 			return nil, nil, fmt.Errorf("unsupported frontmatter sequence on line %d", lineNo+1)
 		}
@@ -68,7 +75,7 @@ func parseBlock(block string) (map[string]string, map[string]map[string]string, 
 			continue
 		}
 
-		currentMap = ""
+		currentMap, lastValueKey = "", ""
 		if value == "" {
 			currentMap = key
 			if maps[currentMap] == nil {
@@ -81,6 +88,7 @@ func parseBlock(block string) (map[string]string, map[string]map[string]string, 
 			return nil, nil, fmt.Errorf("invalid frontmatter value for %s: %w", key, err)
 		}
 		fields[key] = parsedValue
+		lastValueKey = key
 	}
 	return fields, maps, nil
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/makkalot/caretz/internal/tools"
 	"github.com/makkalot/caretz/lib/eventing"
@@ -17,13 +16,9 @@ import (
 const (
 	listSubagentsToolName  = "ListSubagents"
 	cancelSubagentToolName = "CancelSubagent"
-	waitSubagentsToolName  = "WaitSubagents"
 	// subagentListLimit keeps a long session's list from filling the context.
 	subagentListLimit  = 20
 	subagentPreviewLen = 300
-
-	defaultSubagentWaitSeconds = 300
-	maxSubagentWaitSeconds     = 1800
 )
 
 // installSubagentControlTools gives a top-level session its subagent tools once
@@ -86,129 +81,7 @@ func (a *AgentSession) subagentControlTools() []tools.Tool {
 			},
 			Handler: a.handleCancelSubagent,
 		},
-		{
-			Definition: llm.ToolDefinition{
-				Name:        waitSubagentsToolName,
-				Description: "Wait for background subagents and return their results. Only use this when you cannot continue without them.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"subagents": map[string]any{
-							"type":        "array",
-							"items":       map[string]any{"type": "string"},
-							"description": "Names or child session IDs. Default: all running.",
-						},
-						"timeout_seconds": map[string]any{
-							"type":        "integer",
-							"description": fmt.Sprintf("Default %d, maximum %d.", defaultSubagentWaitSeconds, maxSubagentWaitSeconds),
-						},
-					},
-				},
-			},
-			Handler: a.handleWaitSubagents,
-		},
 	}
-}
-
-func (a *AgentSession) handleWaitSubagents(ctx context.Context, tc llm.ToolCall) (string, error) {
-	var input struct {
-		Subagents      []string `json:"subagents"`
-		TimeoutSeconds int      `json:"timeout_seconds"`
-	}
-	if err := json.Unmarshal([]byte(tc.Arguments), &input); err != nil {
-		return "", fmt.Errorf("invalid %s arguments: %w", waitSubagentsToolName, err)
-	}
-	seconds := input.TimeoutSeconds
-	if seconds <= 0 {
-		seconds = defaultSubagentWaitSeconds
-	}
-	seconds = min(seconds, maxSubagentWaitSeconds)
-
-	listed, err := a.ListedSubagentRuns()
-	if err != nil {
-		return "", err
-	}
-	// backgroundRuns holds a run until its report is delivered, so this also
-	// picks up runs that have finished but whose result the model has not seen.
-	ids := make(map[string]bool)
-	var waiting []*asyncChild
-	a.asyncOwnedMu.Lock()
-	active := make(map[string]*asyncChild, len(a.backgroundRuns))
-	for id, run := range a.backgroundRuns {
-		active[id] = run
-	}
-	a.asyncOwnedMu.Unlock()
-	if len(input.Subagents) == 0 {
-		for id, run := range active {
-			ids[id] = true
-			waiting = append(waiting, run)
-		}
-	}
-	for _, ref := range input.Subagents {
-		ref = strings.TrimSpace(ref)
-		var matched []SubagentRun
-		for _, run := range listed {
-			if run.ChildSessionID == ref || strings.EqualFold(run.Name, ref) {
-				matched = append(matched, run)
-			}
-		}
-		if len(matched) == 0 {
-			return "", fmt.Errorf("no subagent run matches %q", ref)
-		}
-		// A name means its active runs, or else its latest one, not every run
-		// it ever had.
-		found := false
-		for _, run := range matched {
-			if background := active[run.ChildSessionID]; background != nil {
-				found = true
-				if !ids[run.ChildSessionID] {
-					ids[run.ChildSessionID] = true
-					waiting = append(waiting, background)
-				}
-			}
-		}
-		if !found {
-			ids[matched[len(matched)-1].ChildSessionID] = true
-		}
-	}
-	if len(ids) == 0 {
-		return "No background subagents are running.", nil
-	}
-
-	timer := time.NewTimer(time.Duration(seconds) * time.Second)
-	defer timer.Stop()
-wait:
-	for _, run := range waiting {
-		select {
-		case <-run.done:
-		case <-timer.C:
-			break wait
-		case <-ctx.Done():
-			return "", ctx.Err()
-		}
-	}
-
-	runs, err := a.ListedSubagentRuns()
-	if err != nil {
-		return "", err
-	}
-	finished := make(map[string]bool)
-	var results, running []string
-	for _, run := range runs {
-		switch {
-		case !ids[run.ChildSessionID]:
-		case run.Status == SubagentRunning:
-			running = append(running, fmt.Sprintf("%s (%s)", run.Name, run.ChildSessionID))
-		default:
-			finished[run.ChildSessionID] = true
-			results = append(results, formatSubagentRunDetail(run))
-		}
-	}
-	a.claimSubagentReports(finished)
-	if len(running) > 0 {
-		results = append(results, fmt.Sprintf("Still running after %d seconds: %s. Their results will arrive in a later message.", seconds, strings.Join(running, ", ")))
-	}
-	return strings.Join(results, "\n\n"), nil
 }
 
 func (a *AgentSession) handleListSubagents(_ context.Context, tc llm.ToolCall) (string, error) {

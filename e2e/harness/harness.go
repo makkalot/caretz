@@ -97,6 +97,8 @@ type Result struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
+	// Killed is set when RunUntilKilled ended the run.
+	Killed bool
 }
 
 // Run executes caretz with BaseArgs followed by args.
@@ -106,7 +108,21 @@ func (e *Env) Run(args ...string) *Result {
 	defer cancel()
 
 	full := append(append([]string{}, e.BaseArgs...), "-workspace", e.Workspace, "-config-root", e.ConfigRoot)
-	full = append(full, args...)
+	return e.run(ctx, append(full, args...))
+}
+
+// RunSubcommand runs a caretz subcommand such as `session repair ID`, which
+// takes no model flags: only the workspace and config root follow args.
+func (e *Env) RunSubcommand(args ...string) *Result {
+	e.t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+	full := append(append([]string{}, args...), "-workspace", e.Workspace, "-config-root", e.ConfigRoot)
+	return e.run(ctx, full)
+}
+
+func (e *Env) run(ctx context.Context, full []string) *Result {
+	e.t.Helper()
 	cmd := exec.CommandContext(ctx, binaryPath, full...)
 	cmd.Dir = e.Workspace
 	cmd.Env = e.environ()
@@ -123,6 +139,45 @@ func (e *Env) Run(args ...string) *Result {
 		res.ExitCode = exitErr.ExitCode()
 	case err != nil:
 		e.t.Fatalf("run caretz: %v", err)
+	}
+	return res
+}
+
+// RunUntilKilled starts caretz like Run, then kills it with SIGKILL once
+// trigger closes, the way a crash or a closed laptop ends it: no cleanup runs.
+// The test fails if caretz exits on its own first.
+func (e *Env) RunUntilKilled(trigger <-chan struct{}, args ...string) *Result {
+	e.t.Helper()
+	full := append(append([]string{}, e.BaseArgs...), "-workspace", e.Workspace, "-config-root", e.ConfigRoot)
+	full = append(full, args...)
+	cmd := exec.Command(binaryPath, full...)
+	cmd.Dir = e.Workspace
+	cmd.Env = e.environ()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Start(); err != nil {
+		e.t.Fatalf("start caretz: %v", err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	res := &Result{t: e.t, Args: full}
+
+	timeout := time.NewTimer(DefaultTimeout)
+	defer timeout.Stop()
+	select {
+	case <-trigger:
+		_ = cmd.Process.Kill()
+		<-exited
+		res.Stdout, res.Stderr, res.ExitCode, res.Killed = stdout.String(), stderr.String(), -1, true
+		return res
+	case err := <-exited:
+		res.Stdout, res.Stderr = stdout.String(), stderr.String()
+		e.t.Fatalf("caretz exited (%v) before it could be killed\n%s", err, res.Dump())
+	case <-timeout.C:
+		_ = cmd.Process.Kill()
+		<-exited
+		res.Stdout, res.Stderr = stdout.String(), stderr.String()
+		e.t.Fatalf("caretz never reached the point to kill it within %s\n%s", DefaultTimeout, res.Dump())
 	}
 	return res
 }

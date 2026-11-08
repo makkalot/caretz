@@ -36,12 +36,20 @@ func TestBackgroundCommandRejectsBadArguments(t *testing.T) {
 	session := newLoopTestSession(t, &loopMockProvider{}, false)
 	t.Cleanup(func() { _ = session.Close() })
 	command := BackgroundCommand{}
-	for _, args := range []string{"cancel", "stop search", "cancel a b"} {
+	for _, args := range []string{"cancel", "stop search", "cancel a b", "log", "log a 5 6"} {
 		if _, err := command.Run(context.Background(), session, args); err == nil || !strings.Contains(err.Error(), "usage:") {
 			t.Fatalf("/bg %s: %v", args, err)
 		}
 	}
 	if _, err := command.Run(context.Background(), session, "cancel search"); err == nil || !strings.Contains(err.Error(), "no subagent run matches") {
 		t.Fatalf("/bg cancel search: %v", err)
+	}
+	for _, lines := range []string{"0", "-3", "ten"} {
+		if _, err := command.Run(context.Background(), session, "log search "+lines); err == nil || !strings.Contains(err.Error(), "positive number") {
+			t.Fatalf("/bg log search %s: %v", lines, err)
+		}
+	}
+	if _, err := command.Run(context.Background(), session, "log search"); err == nil || !strings.Contains(err.Error(), "no subagent run matches") {
+		t.Fatalf("/bg log search: %v", err)
 	}
 }

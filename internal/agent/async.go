@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -459,10 +458,6 @@ type asyncChild struct {
 	child      *AgentSession
 	resumed    *SubagentRun // the earlier run this one continues, if any
 
-	// done closes once the run's final event is in the log and any report is
-	// queued, which is all WaitSubagents needs.
-	done       chan struct{}
-	doneOnce   sync.Once
 	finishOnce sync.Once
 	// releaseSlot gives up the run's concurrency slot once its child has ended.
 	// Keeping it through the report would deadlock: the report needs a turn
@@ -473,8 +468,6 @@ type asyncChild struct {
 	cancel      context.CancelCauseFunc
 	cancelCause error
 }
-
-func (r *asyncChild) markDone() { r.doneOnce.Do(func() { close(r.done) }) }
 
 // requestCancel stops the run. A run still waiting for the executor stops as
 // soon as it binds its context.
@@ -505,7 +498,6 @@ func (a *AgentSession) finishBackgroundRun(run *asyncChild) {
 		a.asyncOwnedMu.Lock()
 		delete(a.backgroundRuns, run.child.ChannelID())
 		a.asyncOwnedMu.Unlock()
-		run.markDone()
 		run.requestCancel(context.Canceled)
 		a.backgroundWG.Done()
 	})
@@ -533,7 +525,6 @@ func (a *AgentSession) reportBackgroundRun(ctx context.Context, run *asyncChild,
 		go a.drainSubagentReports()
 	}
 	a.reportMu.Unlock()
-	run.markDone()
 	if run.releaseSlot != nil {
 		run.releaseSlot()
 	}
@@ -565,8 +556,8 @@ func (a *AgentSession) drainSubagentReports() {
 	}
 }
 
-// runSubagentReportTurn must hold the execution lock. It takes the queue under
-// that lock, so a WaitSubagents call in a turn cannot lose a report to it.
+// runSubagentReportTurn must hold the execution lock, and takes the queue
+// under it.
 func (a *AgentSession) runSubagentReportTurn() error {
 	a.reportMu.Lock()
 	reports := a.pendingReports
@@ -594,20 +585,6 @@ func (a *AgentSession) runSubagentReportTurn() error {
 		a.logger.Warn("Failed to report background subagents: %v", err)
 	}
 	return nil
-}
-
-// claimSubagentReports removes the queued reports of runs whose results the
-// model has already read, so they start no turn.
-func (a *AgentSession) claimSubagentReports(childIDs map[string]bool) {
-	a.reportMu.Lock()
-	defer a.reportMu.Unlock()
-	a.pendingReports = slices.DeleteFunc(a.pendingReports, func(report *subagentReport) bool {
-		if !childIDs[report.childID] {
-			return false
-		}
-		close(report.delivered)
-		return true
-	})
 }
 
 // BackgroundSubagentsRunning counts background runs not yet reported.
@@ -644,22 +621,28 @@ func (a *AgentSession) newAsyncChild(ctx context.Context, request eventing.Async
 	defer a.integrationMu.Unlock()
 	definition := subagents.Definition{Name: "background", Description: "Runs an isolated background task", Mode: "subagent", SystemPrompt: a.systemPrompt}
 	prefix := "background"
-	if name := strings.TrimSpace(request.Agent); name != "" {
+	name := strings.TrimSpace(request.Agent)
+	named := name != ""
+	if named {
 		var err error
 		if definition, err = a.loadEnabledSubagent(name); err != nil {
 			return nil, err
 		}
-		if !definition.ReadOnly() {
-			return nil, fmt.Errorf("subagent %q cannot run in the background because it can change files; set its permission to deny both edit and bash, or run it without background", definition.Name)
-		}
 		prefix = "subagent-" + definition.Name
 	}
-	registry := SubagentToolRegistry(a, definition).WithLivePermissionsFrom(a.ToolRegistry())
-	child, err := a.NewSubagentChildSession(ctx, definition, SubagentChildOptions{Prefix: prefix, ModelRefOverride: strings.TrimSpace(request.Model), ReasoningEffort: strings.TrimSpace(request.ReasoningEffort), Limits: request.ContextLimits, ToolRegistry: registry, IsolatedExecution: true, ResumeChildID: request.ResumeChild})
+	// A background subagent keeps the permissions of its agent file; plan:
+	// true makes it read-only. No one watches its run, so it cannot start
+	// background jobs of its own and no one answers its approvals.
+	registry := SubagentToolRegistry(a, definition)
+	if named {
+		registry = registry.WithoutBackgroundJobs()
+	}
+	registry = registry.WithLivePermissionsFrom(a.ToolRegistry())
+	child, err := a.NewSubagentChildSession(ctx, definition, SubagentChildOptions{Prefix: prefix, ModelRefOverride: strings.TrimSpace(request.Model), ReasoningEffort: strings.TrimSpace(request.ReasoningEffort), Limits: request.ContextLimits, ToolRegistry: registry, IsolatedExecution: true, ResumeChildID: request.ResumeChild, NonInteractivePermissions: named})
 	if err != nil {
 		return nil, err
 	}
-	return &asyncChild{definition: definition, child: child, done: make(chan struct{})}, nil
+	return &asyncChild{definition: definition, child: child}, nil
 }
 
 func (a *AgentSession) appendAsyncChildStarted(run *asyncChild, request eventing.AsyncRunRequest) error {
@@ -793,15 +776,20 @@ func (a *AgentSession) runAsyncSubagent(ctx context.Context, request eventing.As
 	}
 	definition, child := run.definition, run.child
 	defer func() { _ = child.Close() }()
-	if err := RegisterSubagentProgressHandlers(a, child, definition.Name); err != nil {
-		a.appendAsyncChildStopped(run, ctx, err)
-		return err
+	// A background subagent's activity would interleave with the main chat;
+	// /bg log reads it from the child's own log instead.
+	if request.Agent == "" {
+		if err := RegisterSubagentProgressHandlers(a, child, definition.Name); err != nil {
+			a.appendAsyncChildStopped(run, ctx, err)
+			return err
+		}
 	}
 	childTask := task
 	if request.PreviousRun != "" {
 		childTask = fmt.Sprintf("%s\n\nThe previous run of this task did not succeed. Change course if the same problem would recur:\n%s", task, request.PreviousRun)
 	}
 	callCtx, cancelCall := budget.modelContext(ctx, budget.left())
+	callCtx = child.withAutoDeniedPermissions(callCtx)
 	response, err := child.Call(callCtx, buildSubagentRunPrompt(definition, childTask, a.ChannelID(), run.resumed))
 	err = timeoutError(callCtx, err)
 	cancelCall()

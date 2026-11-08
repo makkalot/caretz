@@ -255,7 +255,10 @@ func (s *tuiState) processLineWith(text string, runner promptRunner) (exit bool,
 			}
 			return false, nil
 		}
-		if result.Message != "" && !result.MessagePublished {
+		switch {
+		case result.SubagentLog != nil:
+			s.cliOutput.RenderSubagentLog(*result.SubagentLog)
+		case result.Message != "" && !result.MessagePublished:
 			_, _ = fmt.Fprint(stderr, s.cliOutput.FormatCommandResult(result.Message))
 		}
 		if result.Exit {

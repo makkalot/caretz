@@ -142,41 +142,15 @@ func TestReportsWaitForTheCurrentTurn(t *testing.T) {
 	}
 }
 
-func TestWaitSubagentsReturnsResultsAndStartsNoReportTurn(t *testing.T) {
-	parent := newRecordingParent(
-		toolCalls(t, startSearch(t, "find callers")),
-		toolCalls(t, toolCallOf(t, waitSubagentsToolName, map[string]any{})),
-	)
-	child := &backgroundChildProvider{chat: func(context.Context) (llm.Response, error) { return asyncTestResponse("found 3 callers"), nil }}
-	session := newBackgroundSession(t, parent, child, map[string]string{"search": readOnlyAgent})
-	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
-
-	if _, err := session.Call(t.Context(), "look for callers"); err != nil {
-		t.Fatal(err)
-	}
-	calls := parent.calls()
-	if len(calls) != 3 || !strings.Contains(calls[2], "found 3 callers") {
-		t.Fatalf("calls = %q", calls)
-	}
-	awaitAsyncResult(t, completed, "succeeded")
-	time.Sleep(2 * subagentReportWindow)
-	if calls := parent.calls(); len(calls) != 3 {
-		t.Fatalf("a claimed result still started a report turn: %q", calls)
-	}
-}
-
-// More runs than slots, all waited for in one turn. Finished runs must give up
-// their slots while their reports wait for this turn, or the rest never start.
-func TestWaitSubagentsWithMoreRunsThanSlots(t *testing.T) {
+// More runs than slots, started in one turn. Finished runs must give up their
+// slots while their reports wait for a turn, or the rest never start.
+func TestMoreBackgroundRunsThanSlotsAllFinish(t *testing.T) {
 	count := cap(asyncRunCapacity) + 2
 	calls := make([]llm.ToolCall, count)
 	for i := range calls {
 		calls[i] = startSearch(t, fmt.Sprintf("task %d", i))
 	}
-	parent := newRecordingParent(
-		toolCalls(t, calls...),
-		toolCalls(t, toolCallOf(t, waitSubagentsToolName, map[string]any{"timeout_seconds": 5})),
-	)
+	parent := newRecordingParent(toolCalls(t, calls...))
 	var mu sync.Mutex
 	replies := 0
 	child := &backgroundChildProvider{chat: func(context.Context) (llm.Response, error) {
@@ -186,83 +160,21 @@ func TestWaitSubagentsWithMoreRunsThanSlots(t *testing.T) {
 		return asyncTestResponse(fmt.Sprintf("result %d", replies)), nil
 	}}
 	session := newBackgroundSession(t, parent, child, map[string]string{"search": readOnlyAgent})
+	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
 	if _, err := session.Call(t.Context(), "look everywhere"); err != nil {
 		t.Fatal(err)
 	}
-	got := parent.calls()
-	if len(got) != 3 {
-		t.Fatalf("calls = %q", got)
+	for range count {
+		awaitAsyncResult(t, completed, "succeeded")
 	}
-	if strings.Contains(got[2], "Still running") || strings.Count(got[2], "search: completed") != count {
-		t.Fatalf("wait result:\n%s", got[2])
-	}
-}
-
-func TestWaitSubagentsTimesOutLeavingTheRunToReportLater(t *testing.T) {
-	parent := newRecordingParent()
-	release := make(chan struct{})
-	started := make(chan struct{}, 1)
-	child := &backgroundChildProvider{chat: func(context.Context) (llm.Response, error) {
-		started <- struct{}{}
-		<-release
-		return asyncTestResponse("late result"), nil
-	}}
-	session := newBackgroundSession(t, parent, child, map[string]string{"search": readOnlyAgent})
-	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
-	if _, err := session.startBackgroundSubagent(t.Context(), SubagentRunOptions{Name: "search", Task: "find callers"}); err != nil {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	if err := session.WaitForBackgroundSubagents(ctx); err != nil {
 		t.Fatal(err)
 	}
-	awaitAsyncSignal(t, started)
-	output, err := callSessionTool(t, session, waitSubagentsToolName, map[string]any{"timeout_seconds": 1})
-	if err != nil || !strings.Contains(output, "Still running after 1 seconds: search") {
-		t.Fatalf("output = %q, error = %v", output, err)
-	}
-	close(release)
-	awaitAsyncResult(t, completed, "succeeded")
-	if calls := parent.calls(); len(calls) != 1 || !strings.Contains(calls[0], "late result") {
-		t.Fatalf("calls = %q", calls)
-	}
-}
-
-func TestWaitSubagentsStopsWhenTheTurnIsCancelled(t *testing.T) {
-	child, started := blockingChild()
-	session := newBackgroundSession(t, quietParent(), child, map[string]string{"search": readOnlyAgent})
-	if _, err := session.startBackgroundSubagent(t.Context(), SubagentRunOptions{Name: "search", Task: "find callers"}); err != nil {
-		t.Fatal(err)
-	}
-	awaitAsyncSignal(t, started)
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if _, err := session.handleWaitSubagents(ctx, llm.ToolCall{Arguments: "{}"}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestWaitSubagentsArguments(t *testing.T) {
-	child := &backgroundChildProvider{chat: func(context.Context) (llm.Response, error) { return asyncTestResponse("found 3 callers"), nil }}
-	session := newBackgroundSession(t, quietParent(), child, map[string]string{"search": readOnlyAgent})
-	output, err := callSessionTool(t, session, waitSubagentsToolName, map[string]any{})
-	if err != nil || output != "No background subagents are running." {
-		t.Fatalf("no runs: %q, %v", output, err)
-	}
-	if _, err := callSessionTool(t, session, waitSubagentsToolName, map[string]any{"subagents": []string{"missing"}}); err == nil || !strings.Contains(err.Error(), "no subagent run matches") {
-		t.Fatalf("unknown: %v", err)
-	}
-	run, err := session.RunSubagent(t.Context(), SubagentRunOptions{Name: "search", Task: "find callers"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	output, err = callSessionTool(t, session, waitSubagentsToolName, map[string]any{"subagents": []string{run.ChildSessionID}})
-	if err != nil || !strings.Contains(output, "found 3 callers") {
-		t.Fatalf("finished run: %q, %v", output, err)
-	}
-	// By name, only the latest of several finished runs comes back.
-	if _, err := session.RunSubagent(t.Context(), SubagentRunOptions{Name: "search", Task: "second task"}); err != nil {
-		t.Fatal(err)
-	}
-	output, err = callSessionTool(t, session, waitSubagentsToolName, map[string]any{"subagents": []string{"search"}})
-	if err != nil || !strings.Contains(output, "second task") || strings.Count(output, "search: completed") != 1 {
-		t.Fatalf("by name:\n%s\nerror: %v", output, err)
+	reported := strings.Join(parent.calls(), "\n")
+	if got := strings.Count(reported, `Background subagent "search" completed.`); got != count {
+		t.Fatalf("reported %d of %d runs:\n%s", got, count, reported)
 	}
 }
 

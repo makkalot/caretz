@@ -203,7 +203,7 @@ func TestFormatSubagentRunsLimitsTheList(t *testing.T) {
 }
 
 func TestSubagentControlToolsNeedAnAgentToRun(t *testing.T) {
-	controls := []string{listSubagentsToolName, cancelSubagentToolName, waitSubagentsToolName}
+	controls := []string{listSubagentsToolName, cancelSubagentToolName}
 	session := newBackgroundSession(t, quietParent(), quietParent(), nil)
 	names := toolDefinitionNames(session.ToolRegistry().ToolDefinitions())
 	for _, name := range controls {
