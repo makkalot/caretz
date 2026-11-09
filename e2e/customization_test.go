@@ -120,6 +120,23 @@ func TestCustomizationSubagent(t *testing.T) {
 		Saw(story.Contains("No bugs found"))
 }
 
+func TestCustomizationModelFindsSubagentByItsDescription(t *testing.T) {
+	s := customization.Scenario(t, "caretz finds the right specialist agent without being told its name")
+	s.Given().
+		File(".caretz/agents/reviewer.md",
+			"---\ndescription: Reviews changes for bugs.\nmode: subagent\nplan: true\n---\nReview the change.\n").
+		Model(story.Calls("ListSubagents", `{"available":true}`).ID("agents")).
+		Model(story.Delegates("reviewer", "review my latest change")).
+		Model(story.Replies("No bugs found").As("reviewer")).
+		Model(story.Replies("The reviewer found no bugs"))
+	s.When().Ask("check my latest change for bugs")
+	s.Then().
+		Succeeds().
+		Stdout(story.Contains("The reviewer found no bugs"))
+	s.Then().LastRequest().
+		ToolResult("agents", story.Contains("- reviewer: Reviews changes for bugs. [read-only]"))
+}
+
 const readOnlySearcher = "---\n" +
 	"description: Searches the code.\n" +
 	"mode: subagent\n" +

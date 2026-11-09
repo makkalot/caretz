@@ -44,12 +44,12 @@ func main() {
 			bad++
 			continue
 		}
-		if fm.Model != "local/qwen" || fm.Reasoning != "high" || fm.Temperature == nil || *fm.Temperature != 0.2 {
-			fmt.Printf("  FAIL  %-40s parsed model=%q reasoning=%q temperature=%v\n", filepath.Base(f), fm.Model, fm.Reasoning, fm.Temperature)
+		if fm.Model != "local/qwen" || fm.Reasoning != "high" || !fm.Plan {
+			fmt.Printf("  FAIL  %-40s parsed model=%q reasoning=%q plan=%v\n", filepath.Base(f), fm.Model, fm.Reasoning, fm.Plan)
 			bad++
 			continue
 		}
-		fmt.Printf("  PASS  %-40s model/reasoning/temperature parsed; permission denies %v\n", filepath.Base(f), denied)
+		fmt.Printf("  PASS  %-40s model/reasoning/plan parsed; permission denies %v\n", filepath.Base(f), denied)
 		_ = body
 	}
 

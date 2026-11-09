@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/makkalot/caretz/internal/subagents"
 	"github.com/makkalot/caretz/internal/tools"
 	"github.com/makkalot/caretz/lib/eventing"
 	"github.com/makkalot/caretz/lib/llm"
@@ -19,6 +20,19 @@ const (
 	// subagentListLimit keeps a long session's list from filling the context.
 	subagentListLimit  = 20
 	subagentPreviewLen = 300
+	// availableSubagentLimit caps ListSubagents available=true. The list is
+	// fetched on demand, not sent with every request, so it can be long.
+	availableSubagentLimit = 100
+	// subagentNameHintLimit is how many agent names an error lists before it
+	// points to ListSubagents instead.
+	subagentNameHintLimit = 20
+
+	listSubagentsDescription = "List subagents. With available=true, lists the subagents you can delegate to with CallSubagent and what each is for: check it before starting a substantial task, and before calling CallSubagent with an agent name the user did not give. Without arguments, lists this session's subagent runs, newest first, including interrupted runs from before a resume; use that when asked what happened to a subagent."
+	// callSubagentListHint is added to the main session's CallSubagent
+	// description. The stock description stays generic because the system
+	// prompt, which background runs reuse, is built from it, and those runs
+	// have no ListSubagents.
+	callSubagentListHint = " Call ListSubagents with available=true to see which subagents exist and what each is for."
 )
 
 // installSubagentControlTools gives a top-level session its subagent tools once
@@ -31,7 +45,9 @@ func (a *AgentSession) installSubagentControlTools() {
 		return
 	}
 	a.subagentToolsInstalled = true
-	for _, tool := range a.subagentControlTools() {
+	callSubagent := callSubagentTool(a.handleCallSubagentToolCall)
+	callSubagent.Definition.Description += callSubagentListHint
+	for _, tool := range append(a.subagentControlTools(), callSubagent) {
 		// An embedder's custom tool of the same name stays in place.
 		next, err := registry.WithSessionTool(tool)
 		if err != nil {
@@ -51,10 +67,14 @@ func (a *AgentSession) subagentControlTools() []tools.Tool {
 		{
 			Definition: llm.ToolDefinition{
 				Name:        listSubagentsToolName,
-				Description: "List this session's subagent runs, newest first, including interrupted runs from before a resume. Use it when asked what happened to a subagent.",
+				Description: listSubagentsDescription,
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
+						"available": map[string]any{
+							"type":        "boolean",
+							"description": "List the subagents you can run with CallSubagent, with what each is for, instead of past runs.",
+						},
 						"child_session_id": map[string]any{
 							"type":        "string",
 							"description": "Show this run's full result.",
@@ -86,16 +106,24 @@ func (a *AgentSession) subagentControlTools() []tools.Tool {
 
 func (a *AgentSession) handleListSubagents(_ context.Context, tc llm.ToolCall) (string, error) {
 	var input struct {
-		ChildSessionID string `json:"child_session_id"`
+		Available      lenientBool `json:"available"`
+		ChildSessionID string      `json:"child_session_id"`
 	}
 	if err := json.Unmarshal([]byte(tc.Arguments), &input); err != nil {
 		return "", fmt.Errorf("invalid %s arguments: %w", listSubagentsToolName, err)
+	}
+	id := strings.TrimSpace(input.ChildSessionID)
+	if input.Available {
+		if id != "" {
+			return "", fmt.Errorf("%s: pass available or child_session_id, not both", listSubagentsToolName)
+		}
+		defs, skipped := a.availableSubagents()
+		return formatAvailableSubagents(defs, skipped), nil
 	}
 	runs, err := a.ListedSubagentRuns()
 	if err != nil {
 		return "", err
 	}
-	id := strings.TrimSpace(input.ChildSessionID)
 	if id == "" {
 		return FormatSubagentRuns(runs), nil
 	}
@@ -105,6 +133,77 @@ func (a *AgentSession) handleListSubagents(_ context.Context, tc llm.ToolCall) (
 		}
 	}
 	return "", fmt.Errorf("no subagent run has child session ID %q", id)
+}
+
+// availableSubagents loads the agents this session can run: the snapshot
+// loadEnabledSubagent reads, filtered by the profile. A file that no longer
+// loads is reported in skipped rather than offered, since calling it would
+// fail.
+func (a *AgentSession) availableSubagents() (defs []subagents.Definition, skipped []string) {
+	paths := a.subagentPaths()
+	for _, name := range a.enabledSubagentNames() {
+		def, err := subagents.LoadFile(paths[name])
+		if err != nil {
+			skipped = append(skipped, fmt.Sprintf("%s (%s)", name, oneLine(err.Error(), subagentPreviewLen)))
+			continue
+		}
+		defs = append(defs, def)
+	}
+	return defs, skipped
+}
+
+// formatAvailableSubagents renders one line per agent. Descriptions come from
+// agent files, which may sit in an untrusted workspace, so each is flattened
+// to one line and shortened.
+func formatAvailableSubagents(defs []subagents.Definition, skipped []string) string {
+	var b strings.Builder
+	if len(defs) == 0 {
+		b.WriteString("No subagents are enabled in this session.\n")
+	} else {
+		b.WriteString("Subagents you can run with CallSubagent. Each starts fresh and does not see this conversation, so pass the complete task and context.\n")
+		for i, def := range defs {
+			if i == availableSubagentLimit {
+				fmt.Fprintf(&b, "...and %d more not shown.\n", len(defs)-i)
+				break
+			}
+			fmt.Fprintf(&b, "- %s: %s", def.Name, oneLine(def.Description, subagentPreviewLen))
+			if details := availableSubagentDetails(def); details != "" {
+				fmt.Fprintf(&b, " [%s]", details)
+			}
+			b.WriteString("\n")
+		}
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(&b, "Skipped, could not be loaded: %s\n", strings.Join(skipped, "; "))
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// availableSubagentDetails summarizes what sets an agent apart when choosing
+// one: its model, its reasoning effort, and whether it is read-only.
+func availableSubagentDetails(def subagents.Definition) string {
+	var details []string
+	if model := oneLine(def.Model, 100); model != "" {
+		details = append(details, "model "+model)
+	}
+	if reasoning := oneLine(def.Reasoning, 40); reasoning != "" {
+		details = append(details, "reasoning "+reasoning)
+	}
+	if def.Plan {
+		details = append(details, "read-only")
+	}
+	return strings.Join(details, ", ")
+}
+
+// oneLine collapses whitespace, newlines included, and shortens s to at most
+// maxRunes runes.
+func oneLine(s string, maxRunes int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 func (a *AgentSession) handleCancelSubagent(_ context.Context, tc llm.ToolCall) (string, error) {

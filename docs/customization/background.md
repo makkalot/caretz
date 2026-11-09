@@ -97,7 +97,7 @@ top of `CallSubagent`:
 
 | Tool | What it does |
 | --- | --- |
-| `ListSubagents` | List runs, or show one run's full result |
+| `ListSubagents` | With `available: true`, list the subagents it can run and what each is for; otherwise list runs, or show one run's full result |
 | `CancelSubagent` | Stop a background run |
 
 `CallSubagent` takes `background: true` to start a run in the background, and

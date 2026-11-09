@@ -139,6 +139,29 @@ Feature: Teaching caretz my project
     And caretz's answer contains "The reviewer found no bugs"
     And what the assistant saw from the "reviewer" agent contains "No bugs found"
 
+  # Test: TestCustomizationModelFindsSubagentByItsDescription (e2e/customization_test.go)
+  Scenario: caretz finds the right specialist agent without being told its name
+    Given a file ".caretz/agents/reviewer.md" containing:
+      """
+      ---
+      description: Reviews changes for bugs.
+      mode: subagent
+      plan: true
+      ---
+      Review the change.
+      """
+    And the assistant uses the "ListSubagents" tool with:
+      """
+      {"available":true}
+      """
+    And the assistant hands "review my latest change" to the "reviewer" agent
+    And the "reviewer" agent replies "No bugs found"
+    And the assistant replies "The reviewer found no bugs"
+    When I ask caretz "check my latest change for bugs"
+    Then caretz finishes successfully
+    And caretz's answer contains "The reviewer found no bugs"
+    And the tool result for "agents" in the last request contains "- reviewer: Reviews changes for bugs. [read-only]"
+
   # Test: TestCustomizationBackgroundSubagentFinishesBeforeExit (e2e/customization_test.go)
   Scenario: a one-shot run waits for a specialist agent working in the background
     Given a file ".caretz/agents/searcher.md" containing:

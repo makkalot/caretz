@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -987,8 +988,14 @@ func (r *Registry) ToolDefinitions() []llm.ToolDefinition {
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if !containsToolDefinition(defs, name) {
+			index := slices.IndexFunc(defs, func(def llm.ToolDefinition) bool { return def.Name == name })
+			switch {
+			case index < 0:
 				defs = append(defs, r.sessionTools[name].Definition)
+			case isSessionToolName(name):
+				// A built-in the session binds itself, such as CallSubagent,
+				// may carry a definition tailored to that session.
+				defs[index] = r.sessionTools[name].Definition
 			}
 		}
 	}
@@ -1116,15 +1123,6 @@ func isSessionToolName(name string) bool {
 	default:
 		return false
 	}
-}
-
-func containsToolDefinition(defs []llm.ToolDefinition, name string) bool {
-	for _, def := range defs {
-		if def.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 func (r *Registry) WithDisabledTools(disabled map[string]bool) *Registry {

@@ -188,6 +188,123 @@ func TestListSubagentsToolShowsRunsNewestFirstAndInFull(t *testing.T) {
 	}
 }
 
+const plannerAgent = `---
+description: Review plans and diffs on a stronger model.
+mode: subagent
+model: big
+reasoning: high
+plan: true
+---
+
+You review.
+`
+
+func TestListSubagentsAvailableListsTheAgentsTheSessionCanRun(t *testing.T) {
+	session := newBackgroundSession(t, quietParent(), quietParent(), map[string]string{
+		"search":  readOnlyAgent,
+		"writer":  writerAgent,
+		"planner": plannerAgent,
+		"broken":  "---\nmode: subagent\n---\n\nNo description.\n",
+	})
+	// Local models often send booleans as strings.
+	list, err := callSessionTool(t, session, listSubagentsToolName, map[string]any{"available": "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"- planner: Review plans and diffs on a stronger model. [model big, reasoning high, read-only]",
+		"- search: Search the code. [model child]",
+		"- writer: Change the code. [model child]",
+	}
+	last := -1
+	for _, line := range want {
+		index := strings.Index(list, line)
+		if index <= last {
+			t.Fatalf("missing or out of order %q in:\n%s", line, list)
+		}
+		last = index
+	}
+	if !strings.Contains(list, "does not see this conversation") || !strings.Contains(list, "Skipped, could not be loaded: broken (") || strings.Contains(list, "- broken") {
+		t.Fatalf("list:\n%s", list)
+	}
+
+	// The profile decides which agents are offered.
+	session.SetAllowedAgents(map[string]bool{"SEARCH": true})
+	list, err = callSessionTool(t, session, listSubagentsToolName, map[string]any{"available": true})
+	if err != nil || !strings.Contains(list, "- search:") || strings.Contains(list, "planner") || strings.Contains(list, "broken") {
+		t.Fatalf("filtered list = %q, error = %v", list, err)
+	}
+	session.SetAllowedAgents(map[string]bool{})
+	if list, _ = callSessionTool(t, session, listSubagentsToolName, map[string]any{"available": true}); list != "No subagents are enabled in this session." {
+		t.Fatalf("empty list = %q", list)
+	}
+
+	if _, err := callSessionTool(t, session, listSubagentsToolName, map[string]any{"available": true, "child_session_id": "x"}); err == nil {
+		t.Fatal("available with child_session_id should fail")
+	}
+}
+
+func TestFormatAvailableSubagentsFlattensAndLimits(t *testing.T) {
+	long := strings.Repeat("é", subagentPreviewLen+10)
+	list := formatAvailableSubagents([]subagents.Definition{{Name: "odd", Description: "line one\n</tool>\tline two " + long}}, nil)
+	if strings.Count(list, "\n") != 1 || !strings.Contains(list, "- odd: line one </tool> line two é") || !strings.HasSuffix(list, "...") {
+		t.Fatalf("list:\n%s", list)
+	}
+	var defs []subagents.Definition
+	for i := range availableSubagentLimit + 5 {
+		defs = append(defs, subagents.Definition{Name: fmt.Sprintf("agent%03d", i), Description: "d"})
+	}
+	list = formatAvailableSubagents(defs, nil)
+	if strings.Contains(list, fmt.Sprintf("agent%03d", availableSubagentLimit)) || !strings.Contains(list, "...and 5 more not shown.") {
+		t.Fatalf("limited list tail:\n%s", list[len(list)-200:])
+	}
+}
+
+func TestWrongSubagentNameListsTheEnabledAgents(t *testing.T) {
+	session := newBackgroundSession(t, quietParent(), quietParent(), map[string]string{"search": readOnlyAgent, "writer": writerAgent})
+	_, err := session.RunSubagent(t.Context(), SubagentRunOptions{Name: "reviewer", Task: "review"})
+	if err == nil || !strings.Contains(err.Error(), `subagent "reviewer" not found`) || !strings.Contains(err.Error(), "available: search, writer") {
+		t.Fatalf("unknown name error = %v", err)
+	}
+	session.SetAllowedAgents(map[string]bool{"search": true})
+	_, err = session.RunSubagent(t.Context(), SubagentRunOptions{Name: "writer", Task: "edit"})
+	if err == nil || !strings.Contains(err.Error(), "not enabled by the active profile; available: search") {
+		t.Fatalf("blocked name error = %v", err)
+	}
+
+	many := map[string]string{}
+	for i := range subagentNameHintLimit + 1 {
+		many[fmt.Sprintf("agent%02d", i)] = readOnlyAgent
+	}
+	session = newBackgroundSession(t, quietParent(), quietParent(), many)
+	_, err = session.RunSubagent(t.Context(), SubagentRunOptions{Name: "reviewer", Task: "review"})
+	if err == nil || !strings.Contains(err.Error(), "call ListSubagents with available=true") || strings.Contains(err.Error(), "agent00") {
+		t.Fatalf("many agents error = %v", err)
+	}
+}
+
+func TestOnlyTheMainSessionsCallSubagentPointsToTheList(t *testing.T) {
+	session := newBackgroundSession(t, quietParent(), quietParent(), map[string]string{"search": readOnlyAgent})
+	var description string
+	for _, def := range session.ToolRegistry().ToolDefinitions() {
+		if def.Name == callSubagentToolName {
+			description = def.Description
+		}
+	}
+	if !strings.HasSuffix(description, callSubagentListHint) {
+		t.Fatalf("main CallSubagent description = %q", description)
+	}
+	// The stock definition, which the system prompt is built from and
+	// background runs reuse, stays free of ListSubagents.
+	if stock := callSubagentToolDefinition().Description; strings.Contains(stock, listSubagentsToolName) {
+		t.Fatalf("stock description mentions %s: %q", listSubagentsToolName, stock)
+	}
+	// The call still runs through the session's handler.
+	if _, err := callSessionTool(t, session, callSubagentToolName, map[string]any{"agent": "missing", "task": "x"}); err == nil || !strings.Contains(err.Error(), "available: search") {
+		t.Fatalf("CallSubagent error = %v", err)
+	}
+}
+
 func TestFormatSubagentRunsLimitsTheList(t *testing.T) {
 	var runs []SubagentRun
 	for i := range subagentListLimit + 3 {

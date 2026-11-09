@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 
@@ -226,22 +227,57 @@ func (a *AgentSession) RunSubagent(ctx context.Context, opts SubagentRunOptions)
 }
 
 // loadEnabledSubagent loads the named agent if the active profile allows it.
+// When the name is wrong, the error names the agents that can run, so the
+// model can correct the call in one turn.
 func (a *AgentSession) loadEnabledSubagent(name string) (subagents.Definition, error) {
-	if a.allowedAgents != nil {
-		allowed := a.allowedAgents[name]
-		if !allowed {
-			for configured, enabled := range a.allowedAgents {
-				if enabled && strings.EqualFold(configured, name) {
-					allowed = true
-					break
-				}
-			}
-		}
-		if !allowed {
-			return subagents.Definition{}, fmt.Errorf("subagent %q is not enabled by the active profile", name)
+	if !a.subagentAllowed(name) {
+		return subagents.Definition{}, fmt.Errorf("subagent %q is not enabled by the active profile; %s", name, a.enabledSubagentsHint())
+	}
+	def, err := subagents.LoadFromSnapshot(a.subagentPaths(), name)
+	if errors.Is(err, os.ErrNotExist) {
+		return subagents.Definition{}, fmt.Errorf("%w; %s", err, a.enabledSubagentsHint())
+	}
+	return def, err
+}
+
+// subagentAllowed reports whether the active profile lets the named agent run.
+// Profile names match case-insensitively.
+func (a *AgentSession) subagentAllowed(name string) bool {
+	if a.allowedAgents == nil || a.allowedAgents[name] {
+		return true
+	}
+	for configured, enabled := range a.allowedAgents {
+		if enabled && strings.EqualFold(configured, name) {
+			return true
 		}
 	}
-	return subagents.LoadFromSnapshot(a.subagentPaths(), name)
+	return false
+}
+
+// enabledSubagentNames returns the session's agents the profile allows, sorted.
+func (a *AgentSession) enabledSubagentNames() []string {
+	var names []string
+	for name := range a.subagentPaths() {
+		if a.subagentAllowed(name) {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// enabledSubagentsHint names the agents that can run, or points to
+// ListSubagents when there are too many to name.
+func (a *AgentSession) enabledSubagentsHint() string {
+	names := a.enabledSubagentNames()
+	switch {
+	case len(names) == 0:
+		return "no subagents are enabled in this session"
+	case len(names) > subagentNameHintLimit:
+		return fmt.Sprintf("%d subagents are enabled; call %s with available=true to list them", len(names), listSubagentsToolName)
+	default:
+		return "available: " + strings.Join(names, ", ")
+	}
 }
 
 // subagentStopReason classifies why a run ended with err. ctx is the run's own
