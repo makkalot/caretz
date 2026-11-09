@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/makkalot/caretz/internal/subagents"
@@ -41,6 +43,10 @@ type SubagentRunOptions struct {
 	Task             string
 	ModelRefOverride string
 	ReasoningEffort  string
+	// ResumeChildID continues an earlier run of this session in its existing
+	// child session, keeping its conversation and configuration. Task becomes
+	// optional, and Name may be left empty.
+	ResumeChildID string
 }
 
 type SubagentRunResult struct {
@@ -51,12 +57,40 @@ type SubagentRunResult struct {
 }
 
 type callSubagentToolInput struct {
-	Agent        string `json:"agent"`
-	Task         string `json:"task"`
-	Model        string `json:"model"`
-	SubagentType string `json:"subagent_type"`
-	Prompt       string `json:"prompt"`
-	Description  string `json:"description"`
+	Agent        string      `json:"agent"`
+	Task         string      `json:"task"`
+	Model        string      `json:"model"`
+	SubagentType string      `json:"subagent_type"`
+	Prompt       string      `json:"prompt"`
+	Description  string      `json:"description"`
+	Background   lenientBool `json:"background"`
+	Resume       string      `json:"resume"`
+}
+
+// lenientBool accepts a JSON boolean or a string spelling of one. Models,
+// local ones especially, often send "true" or "True" for a boolean, and
+// refusing the whole call over that wastes a turn.
+type lenientBool bool
+
+func (b *lenientBool) UnmarshalJSON(data []byte) error {
+	var value bool
+	if err := json.Unmarshal(data, &value); err == nil {
+		*b = lenientBool(value)
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return fmt.Errorf("expected true or false, got %s", data)
+	}
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "true", "1":
+		*b = true
+	case "false", "0", "":
+		*b = false
+	default:
+		return fmt.Errorf("expected true or false, got %q", text)
+	}
+	return nil
 }
 
 func (a *AgentSession) handleCallSubagentToolCall(ctx context.Context, tc llm.ToolCall) (llm.Message, error) {
@@ -72,17 +106,31 @@ func (a *AgentSession) handleCallSubagentToolCall(ctx context.Context, tc llm.To
 	if input.Task == "" {
 		input.Task = strings.TrimSpace(input.Description)
 	}
-	if input.Agent == "" {
+	input.Resume = strings.TrimSpace(input.Resume)
+	if input.Agent == "" && input.Resume == "" {
 		return llm.Message{}, fmt.Errorf("CallSubagent agent must not be empty")
 	}
-	if input.Task == "" {
+	if input.Task == "" && input.Resume == "" {
 		return llm.Message{}, fmt.Errorf("CallSubagent task must not be empty")
 	}
-	run, err := a.RunSubagent(ctx, SubagentRunOptions{
+	options := SubagentRunOptions{
 		Name:             input.Agent,
 		Task:             input.Task,
 		ModelRefOverride: strings.TrimSpace(input.Model),
-	})
+		ResumeChildID:    input.Resume,
+	}
+	if input.Background {
+		run, err := a.startBackgroundSubagent(ctx, options)
+		if err != nil {
+			return llm.Message{}, err
+		}
+		return llm.Message{
+			Role:       llm.RoleTool,
+			Content:    formatBackgroundSubagentStart(run),
+			ToolCallID: tc.ID,
+		}, nil
+	}
+	run, err := a.RunSubagent(ctx, options)
 	if err != nil {
 		return llm.Message{}, err
 	}
@@ -111,9 +159,21 @@ Subagent result:
 %s`, run.Name, run.ChildSessionID, run.Result)
 }
 
+func formatBackgroundSubagentStart(run SubagentRunResult) string {
+	return fmt.Sprintf(`Subagent %q started in the background.
+
+Child session ID: %s
+
+Its result will arrive in a later message on its own, so continue with other work or end your turn.`, run.Name, run.ChildSessionID)
+}
+
 func (a *AgentSession) RunSubagent(ctx context.Context, opts SubagentRunOptions) (SubagentRunResult, error) {
 	if a == nil {
 		return SubagentRunResult{}, fmt.Errorf("agent session is required")
+	}
+	opts, resumed, err := a.resolveSubagentResume(opts)
+	if err != nil {
+		return SubagentRunResult{}, err
 	}
 	name := strings.TrimSpace(opts.Name)
 	task := strings.TrimSpace(opts.Task)
@@ -123,21 +183,7 @@ func (a *AgentSession) RunSubagent(ctx context.Context, opts SubagentRunOptions)
 	if task == "" {
 		return SubagentRunResult{}, fmt.Errorf("subagent task must not be empty")
 	}
-	if a.allowedAgents != nil {
-		allowed := a.allowedAgents[name]
-		if !allowed {
-			for configured, enabled := range a.allowedAgents {
-				if enabled && strings.EqualFold(configured, name) {
-					allowed = true
-					break
-				}
-			}
-		}
-		if !allowed {
-			return SubagentRunResult{}, fmt.Errorf("subagent %q is not enabled by the active profile", name)
-		}
-	}
-	def, err := subagents.LoadFromSnapshot(a.subagentPaths(), name)
+	def, err := a.loadEnabledSubagent(name)
 	if err != nil {
 		return SubagentRunResult{}, err
 	}
@@ -145,22 +191,25 @@ func (a *AgentSession) RunSubagent(ctx context.Context, opts SubagentRunOptions)
 		Prefix:           "subagent-" + def.Name,
 		ModelRefOverride: opts.ModelRefOverride,
 		ReasoningEffort:  opts.ReasoningEffort,
+		ResumeChildID:    opts.ResumeChildID,
 	})
 	if err != nil {
 		return SubagentRunResult{}, err
 	}
 	defer func() { _ = child.Close() }()
 
-	if err := a.AppendAuditEvent(eventing.NewSubagentInvocationStarted(a.ChannelID(), def.Name, child.ChannelID(), a.ChannelID(), task, child.ContextWindow())); err != nil {
+	model := firstNonEmpty(opts.ModelRefOverride, def.Model)
+	reasoning := firstNonEmpty(opts.ReasoningEffort, def.Reasoning)
+	if err := a.AppendAuditEvent(eventing.NewSubagentInvocationStartedWithConfig(a.ChannelID(), def.Name, child.ChannelID(), a.ChannelID(), task, model, reasoning, child.ContextWindow())); err != nil {
 		return SubagentRunResult{}, err
 	}
 	if err := RegisterSubagentProgressHandlers(a, child, def.Name); err != nil {
 		return SubagentRunResult{}, err
 	}
 
-	resp, err := child.Call(ctx, BuildSubagentPrompt(def, task, a.ChannelID()))
+	resp, err := child.Call(ctx, buildSubagentRunPrompt(def, task, a.ChannelID(), resumed))
 	if err != nil {
-		_ = a.AppendAuditEvent(eventing.NewSubagentInvocationFailed(a.ChannelID(), def.Name, child.ChannelID(), a.ChannelID(), err.Error(), child.EstimatedContextTokens(), child.ContextWindow()))
+		_ = a.AppendAuditEvent(eventing.NewSubagentInvocationStopped(a.ChannelID(), def.Name, child.ChannelID(), a.ChannelID(), err.Error(), a.subagentStopReason(ctx, err), child.EstimatedContextTokens(), child.ContextWindow()))
 		return SubagentRunResult{}, err
 	}
 	result := responseText(resp)
@@ -176,6 +225,45 @@ func (a *AgentSession) RunSubagent(ctx context.Context, opts SubagentRunOptions)
 	}, nil
 }
 
+// loadEnabledSubagent loads the named agent if the active profile allows it.
+func (a *AgentSession) loadEnabledSubagent(name string) (subagents.Definition, error) {
+	if a.allowedAgents != nil {
+		allowed := a.allowedAgents[name]
+		if !allowed {
+			for configured, enabled := range a.allowedAgents {
+				if enabled && strings.EqualFold(configured, name) {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			return subagents.Definition{}, fmt.Errorf("subagent %q is not enabled by the active profile", name)
+		}
+	}
+	return subagents.LoadFromSnapshot(a.subagentPaths(), name)
+}
+
+// subagentStopReason classifies why a run ended with err. ctx is the run's own
+// context. A closed session wins, because closing it is what cancels the run.
+func (a *AgentSession) subagentStopReason(ctx context.Context, err error) string {
+	if a.lifecycleCtx != nil && a.lifecycleCtx.Err() != nil {
+		return eventing.SubagentStopSessionClosed
+	}
+	var cancelled subagentCancel
+	if errors.As(context.Cause(ctx), &cancelled) {
+		return cancelled.reason
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return eventing.SubagentStopTimeout
+	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
+		return eventing.SubagentStopUserCancelled
+	default:
+		return eventing.SubagentStopError
+	}
+}
+
 type SubagentChildOptions struct {
 	Prefix           string
 	ModelRefOverride string
@@ -186,6 +274,10 @@ type SubagentChildOptions struct {
 	// IsolatedExecution gives the child its own session shell; see
 	// ChildSessionOptions.IsolatedExecution.
 	IsolatedExecution bool
+	// ResumeChildID reopens that child; see ChildSessionOptions.ResumeChannelID.
+	ResumeChildID string
+	// NonInteractivePermissions; see ChildSessionOptions.NonInteractivePermissions.
+	NonInteractivePermissions bool
 }
 
 func (a *AgentSession) NewSubagentChildSession(ctx context.Context, def subagents.Definition, opts SubagentChildOptions) (*AgentSession, error) {
@@ -198,10 +290,12 @@ func (a *AgentSession) NewSubagentChildSession(ctx context.Context, def subagent
 		prefix = "subagent-" + def.Name
 	}
 	child, err := a.NewChildSessionWithOptions(ChildSessionOptions{
-		Prefix:            prefix,
-		SystemPrompt:      def.SystemPrompt,
-		ToolRegistry:      toolRegistry,
-		IsolatedExecution: opts.IsolatedExecution,
+		Prefix:                    prefix,
+		SystemPrompt:              def.SystemPrompt,
+		ToolRegistry:              toolRegistry,
+		IsolatedExecution:         opts.IsolatedExecution,
+		ResumeChannelID:           opts.ResumeChildID,
+		NonInteractivePermissions: opts.NonInteractivePermissions,
 	})
 	if err != nil {
 		return nil, err
@@ -329,71 +423,104 @@ func SubagentToolRegistry(session *AgentSession, def subagents.Definition) *tool
 	disabled[callSubagentToolName] = true
 	// Subagents report back to the parent model, which asks the user.
 	disabled[tools.AskUserToolName] = true
-	return session.ToolRegistry().WithDisabledTools(disabled)
+	if !def.Plan {
+		return session.ToolRegistry().WithDisabledTools(disabled)
+	}
+	// A plan agent never sees the mutating tools, and its Bash runs in a
+	// read-only sandbox, whether it runs in the foreground or background.
+	disabled["Edit"] = true
+	disabled["Write"] = true
+	disabled["SendFile"] = true
+	return session.ToolRegistry().WithDisabledTools(disabled).WithReadOnlyWorkspace()
 }
 
-func RegisterSubagentProgressHandlers(parent, child *AgentSession, name string) error {
-	emit := func(message string, usage llm.Usage, cumulativeTotal int64) error {
-		return parent.PublishAuditEvent(eventing.NewSubagentInvocationProgress(parent.ChannelID(), name, child.ChannelID(), parent.ChannelID(), message, usage, cumulativeTotal, child.EstimatedContextTokens(), child.ContextWindow()))
-	}
-	if err := child.OnContextEvent(eventing.LLMAgentMessageCreated, func(e *types.Event) error {
+// subagentActivity is one line of a subagent's progress, as shown live for a
+// foreground run and by /bg log for any run.
+type subagentActivity struct {
+	message         string
+	usage           llm.Usage
+	cumulativeTotal int64
+}
+
+// subagentActivityEvents are the child context events that produce activity.
+var subagentActivityEvents = []string{
+	eventing.LLMAgentMessageCreated,
+	eventing.LLMReasoningDeltaCreated,
+	eventing.LLMToolCallResultCreated,
+	eventing.CompactionCompletedCreated,
+}
+
+// subagentActivityFor describes child context event e as activity lines,
+// each starting "subagent <name> ". Other event types produce none.
+func subagentActivityFor(name string, eventType string, raw []byte) ([]subagentActivity, error) {
+	switch eventType {
+	case eventing.LLMAgentMessageCreated:
 		var payload eventing.LLMAgentMessage
-		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
-			return err
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, err
 		}
+		var lines []subagentActivity
 		if strings.TrimSpace(payload.ReasoningSummary) != "" {
-			if err := emit(fmt.Sprintf("subagent %s reasoning: %s", name, previewLine(payload.ReasoningSummary, 180)), llm.Usage{}, 0); err != nil {
-				return err
-			}
+			lines = append(lines, subagentActivity{message: fmt.Sprintf("subagent %s reasoning: %s", name, previewLine(payload.ReasoningSummary, 180))})
 		}
 		for _, tc := range payload.Message.ToolCalls {
-			if err := emit(fmt.Sprintf("subagent %s tool call %s(%s)", name, tc.Name, tc.Arguments), payload.Usage, payload.CumulativeTotal); err != nil {
-				return err
-			}
+			lines = append(lines, subagentActivity{message: fmt.Sprintf("subagent %s tool call %s(%s)", name, tc.Name, tc.Arguments), usage: payload.Usage, cumulativeTotal: payload.CumulativeTotal})
 		}
 		if payload.Message.Content != "" {
-			return emit(fmt.Sprintf("subagent %s assistant: %s", name, previewLine(payload.Message.Content, 180)), payload.Usage, payload.CumulativeTotal)
+			lines = append(lines, subagentActivity{message: fmt.Sprintf("subagent %s assistant: %s", name, previewLine(payload.Message.Content, 180)), usage: payload.Usage, cumulativeTotal: payload.CumulativeTotal})
 		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	if err := child.OnContextEvent(eventing.LLMReasoningDeltaCreated, func(e *types.Event) error {
+		return lines, nil
+	case eventing.LLMReasoningDeltaCreated:
 		var payload eventing.LLMReasoningDelta
-		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
-			return err
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, err
 		}
 		text := payload.Text
 		if text == "" {
 			text = payload.Delta
 		}
 		if strings.TrimSpace(text) == "" {
-			return nil
+			return nil, nil
 		}
-		return emit(fmt.Sprintf("subagent %s reasoning: %s", name, previewLine(text, 180)), llm.Usage{}, 0)
-	}); err != nil {
-		return err
-	}
-	if err := child.OnContextEvent(eventing.LLMToolCallResultCreated, func(e *types.Event) error {
+		return []subagentActivity{{message: fmt.Sprintf("subagent %s reasoning: %s", name, previewLine(text, 180))}}, nil
+	case eventing.LLMToolCallResultCreated:
 		var payload eventing.LLMToolCallResult
-		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
-			return err
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, err
 		}
 		content := payload.Message.Content
 		if payload.Error != "" {
 			content = "error: " + payload.Error
 		}
-		return emit(fmt.Sprintf("subagent %s tool result %s: %s", name, payload.Tool.Name, previewLine(content, 140)), llm.Usage{}, 0)
-	}); err != nil {
-		return err
-	}
-	return child.OnContextEvent(eventing.CompactionCompletedCreated, func(e *types.Event) error {
+		return []subagentActivity{{message: fmt.Sprintf("subagent %s tool result %s: %s", name, payload.Tool.Name, previewLine(content, 140))}}, nil
+	case eventing.CompactionCompletedCreated:
 		var payload eventing.CompactionCompleted
-		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil, err
+		}
+		return []subagentActivity{{message: fmt.Sprintf("subagent %s context compacted: %d → %d tokens", name, payload.BeforeTokens, payload.AfterTokens)}}, nil
+	}
+	return nil, nil
+}
+
+func RegisterSubagentProgressHandlers(parent, child *AgentSession, name string) error {
+	for _, eventType := range subagentActivityEvents {
+		if err := child.OnContextEvent(eventType, func(e *types.Event) error {
+			lines, err := subagentActivityFor(name, e.EventType, []byte(e.Payload))
+			if err != nil {
+				return err
+			}
+			for _, line := range lines {
+				if err := parent.PublishAuditEvent(eventing.NewSubagentInvocationProgress(parent.ChannelID(), name, child.ChannelID(), parent.ChannelID(), line.message, line.usage, line.cumulativeTotal, child.EstimatedContextTokens(), child.ContextWindow())); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
-		return emit(fmt.Sprintf("subagent %s context compacted: %d → %d tokens", name, payload.BeforeTokens, payload.AfterTokens), llm.Usage{}, 0)
-	})
+	}
+	return nil
 }
 
 func BuildSubagentPrompt(def subagents.Definition, task, parentSessionID string) string {
@@ -403,6 +530,53 @@ Task:
 %s
 
 Work independently in your own context. Return a concise final result for the parent agent.`, def.Name, parentSessionID, task)
+}
+
+// resolveSubagentResume fills opts from the earlier run opts.ResumeChildID
+// names, and returns that run. Without a resume it returns opts unchanged and
+// no run. Only a run in this session's own log can resume, so a guessed ID
+// cannot open another session.
+func (a *AgentSession) resolveSubagentResume(opts SubagentRunOptions) (SubagentRunOptions, *SubagentRun, error) {
+	id := strings.TrimSpace(opts.ResumeChildID)
+	if id == "" {
+		return opts, nil, nil
+	}
+	runs, err := a.ListedSubagentRuns()
+	if err != nil {
+		return opts, nil, err
+	}
+	index := slices.IndexFunc(runs, func(run SubagentRun) bool { return run.ChildSessionID == id })
+	if index < 0 {
+		return opts, nil, fmt.Errorf("no subagent run of this session has child session ID %q", id)
+	}
+	run := runs[index]
+	if run.Status == SubagentRunning {
+		return opts, nil, fmt.Errorf("subagent %q is still running", run.Name)
+	}
+	if name := strings.TrimSpace(opts.Name); name != "" && !strings.EqualFold(name, run.Name) {
+		return opts, nil, fmt.Errorf("child session %s belongs to subagent %q, not %q", id, run.Name, name)
+	}
+	opts.ResumeChildID = id
+	opts.Name = run.Name
+	opts.Task = firstNonEmpty(opts.Task, "Continue the original task.")
+	opts.ModelRefOverride = firstNonEmpty(opts.ModelRefOverride, run.Model)
+	opts.ReasoningEffort = firstNonEmpty(opts.ReasoningEffort, run.ReasoningEffort)
+	return opts, &run, nil
+}
+
+func buildSubagentRunPrompt(def subagents.Definition, task, parentSessionID string, resumed *SubagentRun) string {
+	if resumed == nil {
+		return BuildSubagentPrompt(def, task, parentSessionID)
+	}
+	return fmt.Sprintf(`You are resuming as subagent %q for parent session %s. Your earlier run ended as: %s.
+
+Original task:
+%s
+
+Now:
+%s
+
+Work may have stopped partway through, and the workspace may have changed since. Re-check the current state before relying on earlier results. Return a concise final result for the parent agent.`, def.Name, parentSessionID, resumed.Status, resumed.Task, task)
 }
 
 func responseText(resp *llm.Response) string {

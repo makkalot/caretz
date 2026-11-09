@@ -138,3 +138,91 @@ Feature: Teaching caretz my project
     Then caretz finishes successfully
     And caretz's answer contains "The reviewer found no bugs"
     And what the assistant saw from the "reviewer" agent contains "No bugs found"
+
+  # Test: TestCustomizationBackgroundSubagentFinishesBeforeExit (e2e/customization_test.go)
+  Scenario: a one-shot run waits for a specialist agent working in the background
+    Given a file ".caretz/agents/searcher.md" containing:
+      """
+      ---
+      description: Searches the code.
+      mode: subagent
+      permission:
+        edit: deny
+        bash: deny
+      ---
+      Search the code and report what you find.
+      """
+    And the assistant uses the "CallSubagent" tool with:
+      """
+      {"agent":"searcher","task":"find the callers","background":true}
+      """
+    And the assistant replies "Working on it"
+    And the "searcher" agent replies "Working on it"
+    And the assistant replies "The searcher found the callers"
+    When I ask caretz "find the callers"
+    Then caretz finishes successfully
+    And caretz contacted the assistant 4 times
+    And caretz's answer contains "The searcher found the callers"
+    And caretz's error output contains "waiting for 1 background subagent(s) to finish"
+    And the user message in the last request contains "Background subagent \"searcher\" completed."
+
+  # Test: TestCustomizationSubagentResumesAfterCaretzIsKilled (e2e/customization_test.go)
+  Scenario: a specialist agent cut short by a crash picks up where it stopped
+    Given a file ".caretz/agents/searcher.md" containing:
+      """
+      ---
+      description: Searches the code.
+      mode: subagent
+      permission:
+        edit: deny
+        bash: deny
+      ---
+      Search the code and report what you find.
+      """
+    And the assistant hands "find the callers" to the "searcher" agent
+    And the "searcher" agent is still working when caretz is killed
+    And the assistant uses the "ListSubagents" tool with:
+      """
+      {}
+      """
+    And the assistant resumes the "searcher" agent's interrupted run
+    And the "searcher" agent replies "Found 3 callers"
+    And the assistant replies "The searcher found 3 callers"
+    When I ask caretz "find the callers" and caretz is killed mid-run
+    And I repair that session
+    And I continue that session with "finish finding the callers"
+    Then caretz finishes successfully
+    And caretz contacted the assistant 6 times
+    And caretz's answer contains "The searcher found 3 callers"
+    And what the assistant saw from resuming the "searcher" agent contains "Found 3 callers"
+    And the tool result for "list" in the last request contains "searcher: interrupted (process_exit)"
+    And the tool result for "list" in the last request contains "resumable: yes"
+    And the user message in request 5 contains "Your earlier run ended as: interrupted"
+    And the user message in request 5 contains "Original task:\nfind the callers"
+
+  # Test: TestCustomizationBackgroundSubagentCanChangeFiles (e2e/customization_test.go)
+  Scenario: a specialist agent that can change files does so in the background
+    Given a file ".caretz/agents/fixer.md" containing:
+      """
+      ---
+      description: Fixes bugs.
+      mode: subagent
+      ---
+      Fix the bug.
+      """
+    And the assistant uses the "CallSubagent" tool with:
+      """
+      {"agent":"fixer","task":"fix it","background":true}
+      """
+    And the assistant replies "Working on it"
+    And the "fixer" agent writes "fixed.txt":
+      """
+      fixed
+      """
+    And the "fixer" agent replies "Working on it"
+    And the assistant replies "The fixer fixed it"
+    When I ask caretz "fix it in the background"
+    Then caretz finishes successfully
+    And the file "fixed.txt" contains "fixed"
+    And caretz's answer contains "The fixer fixed it"
+    And the user message in the last request contains "Background subagent \"fixer\" completed."

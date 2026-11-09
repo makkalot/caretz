@@ -51,6 +51,17 @@ type AgentSession struct {
 	asyncStartErr           error
 	asyncOwnedMu            sync.Mutex
 	asyncOwned              map[string]*ownedAsyncRun
+	childSession            bool
+	subagentToolsInstalled  bool
+	asyncPrepared           map[string]*asyncChild // by request ID; guarded by asyncOwnedMu
+	backgroundRuns          map[string]*asyncChild // by child session ID; guarded by asyncOwnedMu
+	backgroundWG            sync.WaitGroup         // one count per entry in backgroundRuns
+	reportMu                sync.Mutex
+	pendingReports          []*subagentReport
+	reportDraining          bool
+	activeChildrenMu        sync.Mutex
+	activeChildren          map[string]struct{} // open child sessions, by channel ID
+	onClose                 func()
 	integrationMu           sync.Mutex
 	integrations            map[string]sessiontools.Integration
 	integrationFactories    []sessiontools.Factory
@@ -60,6 +71,10 @@ type AgentSession struct {
 	permissionResolutions   map[string]eventing.PermissionResolution
 	sessionPermissionGrants []sessionPermissionGrant
 	permissionTimeout       time.Duration
+	// nonInteractivePermissions denies approval requests as soon as they are
+	// recorded, for children that run with no one to answer, such as
+	// background subagents.
+	nonInteractivePermissions bool
 }
 
 type SubagentModelResolution struct {
@@ -106,6 +121,12 @@ type ChildSessionOptions struct {
 	// IsolatedExecution gives the child its own session shell instead of the
 	// parent's, so a stricter sandbox policy on ToolRegistry applies to Bash.
 	IsolatedExecution bool
+	// ResumeChannelID reopens that child session instead of creating one. Any
+	// turn its process did not finish is ended first, so it restores cleanly.
+	ResumeChannelID string
+	// NonInteractivePermissions denies the child's approval requests at once
+	// instead of waiting for an answer no one will give.
+	NonInteractivePermissions bool
 }
 
 type SessionParams struct {
@@ -126,6 +147,9 @@ type SessionParams struct {
 	// PermissionTimeout denies an unanswered permission request after this
 	// long. Zero waits until the user answers or the turn is cancelled.
 	PermissionTimeout time.Duration
+	// ChildSession marks a session run by another session. It gets no tools for
+	// managing subagents, because it cannot start any.
+	ChildSession bool
 }
 
 func NewAgentSession(adapterType, channelId string, params SessionParams) (*AgentSession, error) {
@@ -341,6 +365,8 @@ func newAgentSessionWithContextManager(adapterType, channelId string, params Ses
 	if err := loop.SwitchRuntime(sessionToolRegistry, loop.systemPrompt); err != nil {
 		return nil, err
 	}
+	session.childSession = params.ChildSession
+	session.installSubagentControlTools()
 	return session, nil
 }
 
@@ -713,6 +739,7 @@ func (a *AgentSession) NewSiblingSession(channelID string) (*AgentSession, error
 		return nil, err
 	}
 	sibling.inheritAgents(a)
+	sibling.installSubagentControlTools()
 	sibling.SetAllowedAgents(a.AllowedAgents())
 	sibling.SetSubagentModelResolver(a.subagentModelResolver)
 	sibling.SetLoopGuard(a.LoopGuard())
@@ -733,7 +760,13 @@ func (a *AgentSession) NewChildSessionWithOptions(opts ChildSessionOptions) (*Ag
 	if prefix == "" {
 		prefix = "child"
 	}
-	channelID := fmt.Sprintf("%s-%s-%d", a.channelId, prefix, time.Now().UnixNano())
+	channelID := opts.ResumeChannelID
+	if channelID == "" {
+		channelID = fmt.Sprintf("%s-%s-%d", a.channelId, prefix, time.Now().UnixNano())
+	}
+	if err := a.reserveActiveChild(channelID); err != nil {
+		return nil, err
+	}
 	systemPrompt := opts.SystemPrompt
 	if systemPrompt == "" {
 		systemPrompt = a.systemPrompt
@@ -746,30 +779,110 @@ func (a *AgentSession) NewChildSessionWithOptions(opts ChildSessionOptions) (*Ag
 	} else {
 		toolRegistry = toolRegistry.WithoutSessionTools().ShareSessionExecutionFrom(a.toolRegistry)
 	}
-	child, err := NewAgentSession(a.adapterType, channelID, SessionParams{
-		BaseDir:               a.baseDir,
-		WorkspaceDir:          a.workspaceDir,
-		Logger:                a.logger,
-		Provider:              a.currentProvider(),
-		ToolRegistry:          toolRegistry,
-		SystemPrompt:          systemPrompt,
-		ContextWindow:         a.ContextWindow(),
-		ReservedTokens:        a.ReservedTokens(),
-		KeepRecentTokens:      a.KeepRecentTokens(),
-		SummaryTokens:         a.SummaryTokens(),
-		InMemorySessionStore:  a.inMemorySessionStore,
-		DisableContextManager: a.disableContextManager,
-		DisableTasks:          a.disableTasks,
-		PermissionTimeout:     a.permissionTimeout,
-	})
+	open := func() (*AgentSession, error) {
+		return NewAgentSession(a.adapterType, channelID, SessionParams{
+			BaseDir:               a.baseDir,
+			WorkspaceDir:          a.workspaceDir,
+			Logger:                a.logger,
+			Provider:              a.currentProvider(),
+			ToolRegistry:          toolRegistry,
+			SystemPrompt:          systemPrompt,
+			ContextWindow:         a.ContextWindow(),
+			ReservedTokens:        a.ReservedTokens(),
+			KeepRecentTokens:      a.KeepRecentTokens(),
+			SummaryTokens:         a.SummaryTokens(),
+			InMemorySessionStore:  a.inMemorySessionStore,
+			DisableContextManager: a.disableContextManager,
+			DisableTasks:          a.disableTasks,
+			PermissionTimeout:     a.permissionTimeout,
+			ChildSession:          true,
+		})
+	}
+	child, err := open()
+	if err == nil && opts.ResumeChannelID != "" {
+		var ended bool
+		if ended, err = child.endUnfinishedTurn(); err != nil {
+			_ = child.Close()
+		} else if ended {
+			// Restoring trimmed the unfinished turn from memory, so the ending
+			// just written only takes effect in a fresh restore.
+			_ = child.Close()
+			child, err = open()
+		}
+	}
 	if err != nil {
+		a.releaseActiveChild(channelID)
 		return nil, err
 	}
+	child.onClose = func() { a.releaseActiveChild(channelID) }
+	child.nonInteractivePermissions = opts.NonInteractivePermissions
 	child.inheritAgents(a)
 	child.SetAllowedAgents(a.AllowedAgents())
 	child.SetSubagentModelResolver(a.subagentModelResolver)
 	child.SetLoopGuard(a.LoopGuard())
 	return child, nil
+}
+
+// endUnfinishedTurn gives the session's last turn a controlled-interruption
+// ending if its process died before writing one, and reports whether it did.
+//
+//	[prev][assistant tool call][x missing tool result]
+//	[prev][assistant tool call][repair tool result][interrupted assistant response]
+func (a *AgentSession) endUnfinishedTurn() (bool, error) {
+	events, err := a.contextSessionStore.GetAllContextEvents(a.channelId)
+	if err != nil {
+		return false, fmt.Errorf("read context events: %w", err)
+	}
+	var last *eventing.LLMUserMessage
+	for _, event := range events {
+		if event.EventType != eventing.LLMUserMessageCreated {
+			continue
+		}
+		var payload eventing.LLMUserMessage
+		if json.Unmarshal([]byte(event.Payload), &payload) == nil {
+			last = &payload
+		}
+	}
+	if last == nil {
+		return false, nil
+	}
+	if err := a.finalizeInterruptedTurn(a.channelId, last.ParentOriginatorID, last.ParentOriginatorVersion, "", eventing.SubagentStopProcessExit); err != nil {
+		return false, err
+	}
+	after, err := a.contextSessionStore.GetAllContextEvents(a.channelId)
+	if err != nil {
+		return false, fmt.Errorf("read context events: %w", err)
+	}
+	return len(after) != len(events), nil
+}
+
+// reserveActiveChild records id as open until it closes, which is how
+// SubagentRuns tells a run still going from one its process lost, and keeps a
+// child from being opened twice.
+func (a *AgentSession) reserveActiveChild(id string) error {
+	a.activeChildrenMu.Lock()
+	defer a.activeChildrenMu.Unlock()
+	if _, active := a.activeChildren[id]; active {
+		return fmt.Errorf("child session %s is already running", id)
+	}
+	if a.activeChildren == nil {
+		a.activeChildren = make(map[string]struct{})
+	}
+	a.activeChildren[id] = struct{}{}
+	return nil
+}
+
+func (a *AgentSession) releaseActiveChild(id string) {
+	a.activeChildrenMu.Lock()
+	defer a.activeChildrenMu.Unlock()
+	delete(a.activeChildren, id)
+}
+
+func (a *AgentSession) childActive(id string) bool {
+	a.activeChildrenMu.Lock()
+	defer a.activeChildrenMu.Unlock()
+	_, active := a.activeChildren[id]
+	return active
 }
 
 func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, error) {
@@ -1082,6 +1195,10 @@ func (a *AgentLoop) run(ctx context.Context, turn AgentTurn) (*llm.Response, err
 				}
 				if requestErr != nil {
 					err = requestErr
+					break
+				}
+				if !allowed && permissionsAutoDenied(ctx) {
+					err = fmt.Errorf("permission denied: %s (background subagents cannot ask for approval; work without it or report what you need)", permissionErr.Target)
 					break
 				}
 				if !allowed {
@@ -1847,6 +1964,7 @@ func (a *AgentSession) SetAgentsDirs(dirs []string) {
 	a.agentsMu.Lock()
 	a.agentPaths = paths
 	a.agentsMu.Unlock()
+	a.installSubagentControlTools()
 }
 
 func (a *AgentSession) inheritAgents(parent *AgentSession) {

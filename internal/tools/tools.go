@@ -65,6 +65,43 @@ type Registry struct {
 	// Each clone gets its own copy, so a subagent keeps the mode it was
 	// spawned with.
 	planMode *atomic.Bool
+	// readOnlyWorkspace makes this registry behave like plan mode for tool
+	// execution without telling the model it is in plan mode. Subagents
+	// with plan: true use it, independent of the session's mode.
+	readOnlyWorkspace bool
+	// noBackgroundJobs refuses Bash background jobs. Background subagents
+	// use it because nothing watches or stops jobs they would start.
+	noBackgroundJobs bool
+}
+
+// WithReadOnlyWorkspace returns a clone of r whose Bash commands run in a
+// read-only sandbox and whose mutating tools fail, independent of plan mode.
+func (r *Registry) WithReadOnlyWorkspace() *Registry {
+	clone := r.clone()
+	clone.readOnlyWorkspace = true
+	return clone
+}
+
+// WithoutBackgroundJobs returns a clone of r whose Bash refuses to start
+// background jobs.
+func (r *Registry) WithoutBackgroundJobs() *Registry {
+	clone := r.clone()
+	clone.noBackgroundJobs = true
+	return clone
+}
+
+// WorkspaceReadOnly reports whether tools must leave the workspace
+// unchanged, either because of plan mode or a read-only registry.
+func (r *Registry) WorkspaceReadOnly() bool {
+	return r.PlanMode() || (r != nil && r.readOnlyWorkspace)
+}
+
+// readOnlyReason names why the workspace is read-only, for error messages.
+func (r *Registry) readOnlyReason() string {
+	if r.PlanMode() {
+		return "plan mode is active"
+	}
+	return "this subagent is in plan mode (plan: true in its agent file)"
 }
 
 // PlanMode reports whether mutating tools are disabled and Bash runs
@@ -342,13 +379,13 @@ func (r *Registry) HandleToolCallContext(ctx context.Context, toolCall llm.ToolC
 	case "Read":
 		return r.handleReadToolCall(ctx, toolCall)
 	case "Edit":
-		if r.PlanMode() {
-			return llm.Message{}, fmt.Errorf("plan mode is active: Edit tool is disabled")
+		if r.WorkspaceReadOnly() {
+			return llm.Message{}, fmt.Errorf("%s: Edit tool is disabled", r.readOnlyReason())
 		}
 		return r.handleEditToolCall(ctx, toolCall)
 	case "Write":
-		if r.PlanMode() {
-			return llm.Message{}, fmt.Errorf("plan mode is active: Write tool is disabled")
+		if r.WorkspaceReadOnly() {
+			return llm.Message{}, fmt.Errorf("%s: Write tool is disabled", r.readOnlyReason())
 		}
 		return r.handleWriteToolCall(ctx, toolCall)
 	case "Bash":
@@ -386,8 +423,8 @@ func (r *Registry) HandleToolCallContext(ctx context.Context, toolCall llm.ToolC
 		if !r.sendFileEnabled() {
 			return llm.Message{}, fmt.Errorf("invalid tool")
 		}
-		if r.PlanMode() {
-			return llm.Message{}, fmt.Errorf("plan mode is active: SendFile tool is disabled")
+		if r.WorkspaceReadOnly() {
+			return llm.Message{}, fmt.Errorf("%s: SendFile tool is disabled", r.readOnlyReason())
 		}
 		return r.handleSendFileToolCall(ctx, toolCall)
 	default:
@@ -408,8 +445,8 @@ func (r *Registry) runSandboxed(ctx context.Context, cwd, command string, opts s
 		opts.WritableRoots = append(opts.WritableRoots, write...)
 		opts.NetworkAllowlist = append(opts.NetworkAllowlist, network...)
 		// The runner is built writable so the mode can switch mid-session;
-		// plan mode is applied to each command instead.
-		opts.ReadOnly = opts.ReadOnly || r.PlanMode()
+		// plan mode and read-only registries are applied to each command.
+		opts.ReadOnly = opts.ReadOnly || r.WorkspaceReadOnly()
 	}
 	if r != nil && r.RunSandboxedOptions != nil {
 		return r.RunSandboxedOptions(ctx, cwd, command, opts)
@@ -900,10 +937,19 @@ func ToolDefinitions() []llm.ToolDefinition {
 						"type":        "string",
 						"description": "Optional configured provider/model ref to use for this subagent run, overriding the subagent definition's model.",
 					},
+					"background": map[string]any{
+						"type":        "boolean",
+						"description": "Return immediately; the result arrives in a later message. The subagent keeps the permissions of its agent file; approvals it asks for are denied.",
+					},
+					"resume": map[string]any{
+						"type":        "string",
+						"description": "Child session ID of an earlier run to continue; task is then optional. If the user cancelled that run, resume it only when they ask.",
+					},
 				},
 				"anyOf": []map[string]any{
 					{"required": []string{"agent", "task"}},
 					{"required": []string{"subagent_type", "prompt"}},
+					{"required": []string{"resume"}},
 				},
 			},
 		},

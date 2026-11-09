@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -20,6 +21,123 @@ type SubagentReplay struct {
 	Result string
 	Error  string
 	Stats  *eventing.SubagentStats
+}
+
+// SubagentRunStatus is where a subagent run stands.
+type SubagentRunStatus string
+
+const (
+	SubagentRunning     SubagentRunStatus = "running"
+	SubagentCompleted   SubagentRunStatus = "completed"
+	SubagentFailed      SubagentRunStatus = "failed"
+	SubagentCancelled   SubagentRunStatus = "cancelled"
+	SubagentTimedOut    SubagentRunStatus = "timed_out"
+	SubagentInterrupted SubagentRunStatus = "interrupted"
+)
+
+// SubagentRun is one child of this session, derived from its audit log so it
+// survives compaction and session restarts.
+type SubagentRun struct {
+	Name            string
+	ChildSessionID  string
+	Task            string
+	Model           string
+	ReasoningEffort string
+	Status          SubagentRunStatus
+	// StopReason is a SubagentStop constant; empty unless the run stopped
+	// without a result.
+	StopReason string
+	Result     string
+	Error      string
+	// Resumable reports whether the child can be reopened: it is not running
+	// and was started from an agent definition, not by a goal or a schedule.
+	Resumable bool
+}
+
+// SubagentRuns returns this session's subagent runs, oldest first. A child
+// started more than once appears once, with its latest state.
+func (a *AgentSession) SubagentRuns() ([]SubagentRun, error) {
+	events, err := a.AuditEvents()
+	if err != nil {
+		return nil, err
+	}
+	runs := make([]SubagentRun, 0)
+	index := make(map[string]int)
+	for _, event := range events {
+		switch event.EventType {
+		case eventing.SubagentInvocationStarted, eventing.SubagentInvocationCompleted, eventing.SubagentInvocationFailed:
+		default:
+			continue
+		}
+		var payload eventing.SubagentInvocation
+		if err := json.Unmarshal([]byte(event.Payload), &payload); err != nil {
+			return nil, err
+		}
+		i, known := index[payload.ChildSessionID]
+		switch event.EventType {
+		case eventing.SubagentInvocationStarted:
+			if !known {
+				i = len(runs)
+				index[payload.ChildSessionID] = i
+				runs = append(runs, SubagentRun{Name: payload.Name, ChildSessionID: payload.ChildSessionID, Task: payload.Task})
+			}
+			runs[i].Model, runs[i].ReasoningEffort = payload.Model, payload.ReasoningEffort
+			runs[i].Status = SubagentRunning
+			runs[i].StopReason, runs[i].Result, runs[i].Error = "", "", ""
+		case eventing.SubagentInvocationCompleted:
+			if known {
+				runs[i].Status, runs[i].StopReason, runs[i].Result, runs[i].Error = SubagentCompleted, "", payload.Result, ""
+			}
+		case eventing.SubagentInvocationFailed:
+			if known {
+				runs[i].StopReason = stoppedRunReason(payload)
+				runs[i].Status = stoppedRunStatus(runs[i].StopReason)
+				runs[i].Error = payload.Error
+			}
+		}
+	}
+	for i := range runs {
+		if runs[i].Status == SubagentRunning && !a.childActive(runs[i].ChildSessionID) {
+			runs[i].Status, runs[i].StopReason = SubagentInterrupted, eventing.SubagentStopProcessExit
+		}
+		runs[i].Resumable = runs[i].Status != SubagentRunning && a.ownsResumableChild(runs[i].Name, runs[i].ChildSessionID)
+	}
+	return runs, nil
+}
+
+// ownsResumableChild matches the ID NewSubagentChildSession gives a child of
+// this session started from an agent definition. Goal and scheduled children
+// use other prefixes, and the parent's ID keeps other sessions' children out.
+func (a *AgentSession) ownsResumableChild(name, childID string) bool {
+	return strings.HasPrefix(childID, a.channelId+"-subagent-"+name+"-")
+}
+
+// stoppedRunReason falls back to the error text for events written before
+// StopReason existed.
+func stoppedRunReason(payload eventing.SubagentInvocation) string {
+	switch {
+	case payload.StopReason != "":
+		return payload.StopReason
+	case strings.Contains(payload.Error, context.Canceled.Error()):
+		return eventing.SubagentStopUserCancelled
+	case strings.Contains(payload.Error, context.DeadlineExceeded.Error()):
+		return eventing.SubagentStopTimeout
+	default:
+		return eventing.SubagentStopError
+	}
+}
+
+func stoppedRunStatus(reason string) SubagentRunStatus {
+	switch reason {
+	case eventing.SubagentStopUserCancelled, eventing.SubagentStopModelCancelled:
+		return SubagentCancelled
+	case eventing.SubagentStopTimeout:
+		return SubagentTimedOut
+	case eventing.SubagentStopSessionClosed:
+		return SubagentInterrupted
+	default:
+		return SubagentFailed
+	}
 }
 
 func (a *AgentSession) GoalEvents() ([]eventing.GoalEvent, error) {

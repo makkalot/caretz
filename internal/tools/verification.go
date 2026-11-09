@@ -65,7 +65,7 @@ func (r *Registry) RunCommandWithPermissions(ctx context.Context, command string
 	call := llm.ToolCall{ID: "command-" + uuid.NewV4().String(), Name: "Bash", Arguments: string(arguments)}
 	stdout, stderr, runErr := r.runSandboxed(ctx, cwd, command, sandbox.RunOptions{
 		TimeoutSeconds: sandbox.DefaultTimeoutSeconds,
-		Env:            ActorMetadataEnv(ctx), ReadOnly: r.PlanMode(),
+		Env:            ActorMetadataEnv(ctx), ReadOnly: r.WorkspaceReadOnly(),
 		AuthorizeNetwork: networkAuthorizer(ctx, call, command),
 	})
 	return r.classifyCommandResult(ctx, cwd, command, stdout, stderr, runErr, "run command")
@@ -113,7 +113,7 @@ func (r *Registry) RunInteractiveCommand(ctx context.Context, command string) (V
 	if err != nil {
 		return result, err
 	}
-	if r.PlanMode() {
+	if r.WorkspaceReadOnly() {
 		return r.runOneShotCommand(ctx, cwd, command, sandbox.DefaultTimeoutSeconds, "run interactive command")
 	}
 	session, err := r.executionState.get()

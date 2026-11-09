@@ -30,9 +30,10 @@ Call it in a session:
 ```
 
 Caretz runs the child, stores it as a child session, feeds its result back to
-the parent, and lets the parent produce the user-facing response. Subagent
-orchestration is sequential. For multi-step work with independent checks, see
-[Goals](../goals/_index.md).
+the parent, and lets the parent produce the user-facing response. Any subagent can also
+[work in the background](background.md) while you keep
+talking, and any run cut short can be resumed where it stopped. For
+multi-step work with independent checks, see [Goals](../goals/_index.md).
 
 ## Optional Fields
 
@@ -43,6 +44,7 @@ Supported optional frontmatter fields are:
 model: local/qwen
 reasoning: high
 temperature: 0.2
+plan: true
 permission:
   edit: deny
   bash: deny
@@ -51,8 +53,15 @@ permission:
 - `model` selects a configured `provider/model` for that subagent.
 - `reasoning` overrides its reasoning effort.
 - `temperature` is passed to the model when supported.
+- `plan: true` runs the subagent in plan mode: no `Edit`, `Write`, or
+  `SendFile`, and `Bash` runs in a read-only sandbox. Use it for reviewers
+  and testers, especially in the [background](background.md).
 - `permission.edit: deny` disables both `Edit` and `Write`.
 - `permission.bash: deny` disables `Bash`.
+
+Each frontmatter value must stay on one line. Caretz skips an agent file it
+can't parse, prints a warning naming the file and line at startup, and keeps
+the other agents.
 
 Other permission values currently have no effect. Child sessions inherit the
 parent workspace, context limits, sandbox policy, and applicable tools, then

@@ -208,6 +208,74 @@ func TestConformanceFilesystemReadOnlyWorkspace(t *testing.T) {
 	})
 }
 
+// Tool caches under .caretz/scratch stay writable in a read-only run, so
+// builds and tests reuse them, while the rest of the workspace does not.
+func TestConformanceFilesystemReadOnlyScratchWritable(t *testing.T) {
+	requireConformance(t)
+	conformanceModes(t, NewRunner(Config{ReadOnly: true}), func(t *testing.T, run func(string, string, RunOptions) (string, string, error)) {
+		cwd := t.TempDir()
+		out, stderr, err := run(cwd, `mkdir -p "$GOCACHE" && printf ok > "$GOCACHE/value" && cat "$GOCACHE/value"; if printf bad > .caretz/forbidden 2>/dev/null; then exit 20; fi`, RunOptions{})
+		if err != nil || out != "ok" {
+			t.Fatalf("out=%q stderr=%q err=%v", out, stderr, err)
+		}
+		if data, err := os.ReadFile(filepath.Join(ScratchDir(cwd), "go-build", "value")); err != nil || string(data) != "ok" {
+			t.Fatalf("scratch write=%q err=%v", data, err)
+		}
+		requireHostAbsent(t, filepath.Join(cwd, ".caretz", "forbidden"))
+	})
+}
+
+// go test works in a read-only run and its second run is served from the
+// cache under .caretz/scratch rather than rebuilt.
+func TestConformanceReadOnlyGoTestReusesCache(t *testing.T) {
+	requireConformance(t)
+	runner := NewRunner(Config{ReadOnly: true})
+	cwd := t.TempDir()
+	files := map[string]string{
+		"go.mod":      "module example.com/scratch\n\ngo 1.21\n",
+		"sum_test.go": "package scratch\n\nimport \"testing\"\n\nfunc TestSum(t *testing.T) {\n\tif 1+1 != 2 {\n\t\tt.Fatal(\"math\")\n\t}\n}\n",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(cwd, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, _, err := runner.RunContextOptions(t.Context(), cwd, `command -v go`, RunOptions{}); err != nil || strings.TrimSpace(out) == "" {
+		t.Skip("go is not on the sandbox PATH")
+	}
+	const command = `GOTOOLCHAIN=local GOFLAGS=-buildvcs=false go test ./...`
+	for i, want := range []string{"ok", "(cached)"} {
+		out, stderr, err := runner.RunContextOptions(t.Context(), cwd, command, RunOptions{TimeoutSeconds: 120})
+		if err != nil || !strings.Contains(out, want) {
+			t.Fatalf("run %d: out=%q stderr=%q err=%v, want %q", i+1, out, stderr, err, want)
+		}
+	}
+	requireHostAbsent(t, filepath.Join(cwd, "scratch.test"))
+}
+
+// A scratch directory replaced by a symlink loses its exception, so a
+// read-only run cannot write to the link's target.
+func TestConformanceFilesystemReadOnlyScratchSymlinkDenied(t *testing.T) {
+	requireConformance(t)
+	for _, link := range []string{".caretz", filepath.Join(".caretz", "scratch")} {
+		t.Run(filepath.Base(link), func(t *testing.T) {
+			conformanceModes(t, NewRunner(Config{ReadOnly: true}), func(t *testing.T, run func(string, string, RunOptions) (string, string, error)) {
+				cwd, target := t.TempDir(), t.TempDir()
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(cwd, link)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, filepath.Join(cwd, link)); err != nil {
+					t.Fatal(err)
+				}
+				if out, stderr, err := run(cwd, `printf bad > `+link+`/escaped 2>/dev/null; true`, RunOptions{}); err != nil {
+					t.Fatalf("out=%q stderr=%q err=%v", out, stderr, err)
+				}
+				requireHostAbsent(t, filepath.Join(target, "escaped"))
+			})
+		})
+	}
+}
+
 func TestConformanceFilesystemPerCommandReadOnly(t *testing.T) {
 	requireConformance(t)
 	runner := NewRunner(Config{})

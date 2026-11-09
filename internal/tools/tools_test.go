@@ -586,7 +586,7 @@ func TestTaskToolsAreSessionOnly(t *testing.T) {
 		t.Fatal("CallSubagent tool definition missing")
 	}
 	properties, _ := callSubagent.Parameters["properties"].(map[string]any)
-	for _, name := range []string{"agent", "task", "subagent_type", "prompt", "description"} {
+	for _, name := range []string{"agent", "task", "subagent_type", "prompt", "description", "background"} {
 		if _, ok := properties[name]; !ok {
 			t.Fatalf("CallSubagent properties missing %q: %#v", name, properties)
 		}

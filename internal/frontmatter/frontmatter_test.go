@@ -107,6 +107,16 @@ func TestParseErrors(t *testing.T) {
 			wantErr: "nested frontmatter field",
 		},
 		{
+			name:    "value wrapped onto an indented line",
+			input:   "---\ndescription: Searches the codebase. Use for \"find\n  all callers of X\".\nmode: subagent\n---\nbody",
+			wantErr: `line 3 continues the value of "description" from the line before`,
+		},
+		{
+			name:    "value wrapped onto an unindented line",
+			input:   "---\ndescription: Searches the codebase\nand git history\n---\nbody",
+			wantErr: `line 3 continues the value of "description"`,
+		},
+		{
 			name:    "unsupported top-level sequence",
 			input:   "---\n- edit\n---\nbody",
 			wantErr: "unsupported frontmatter sequence",

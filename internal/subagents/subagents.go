@@ -1,6 +1,7 @@
 package subagents
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,8 @@ type Frontmatter struct {
 	Reasoning   string
 	Temperature *float64
 	Permission  map[string]string
+	// Plan runs the agent in plan mode: no file edits, read-only Bash.
+	Plan bool
 }
 
 type Definition struct {
@@ -28,6 +31,7 @@ type Definition struct {
 	Reasoning    string
 	Temperature  *float64
 	Permission   map[string]string
+	Plan         bool
 	SystemPrompt string
 	Path         string
 }
@@ -40,12 +44,43 @@ func Discover(cwd string) ([]Definition, error) {
 	return DiscoverFromDir(AgentsDir(cwd))
 }
 
+// DiscoveryError lists the agent files and directories discovery skipped.
+// Discovery still returns every definition that loaded, so one broken file
+// does not hide the others.
+type DiscoveryError struct {
+	Problems []error
+}
+
+func (e *DiscoveryError) Error() string {
+	messages := make([]string, len(e.Problems))
+	for i, problem := range e.Problems {
+		messages[i] = problem.Error()
+	}
+	return strings.Join(messages, "; ")
+}
+
+func (e *DiscoveryError) Unwrap() []error { return e.Problems }
+
+func discoveryError(problems []error) error {
+	if len(problems) == 0 {
+		return nil
+	}
+	return &DiscoveryError{Problems: problems}
+}
+
+// DiscoverFromDirs loads the agents in dirs, later directories overriding
+// earlier ones by name. It returns every definition that loaded, and a
+// *DiscoveryError naming anything it skipped.
 func DiscoverFromDirs(dirs []string) ([]Definition, error) {
 	merged := map[string]Definition{}
+	var problems []error
 	for _, dir := range dirs {
 		defs, err := DiscoverFromDir(dir)
-		if err != nil {
-			return nil, err
+		var discoveryErr *DiscoveryError
+		if errors.As(err, &discoveryErr) {
+			problems = append(problems, discoveryErr.Problems...)
+		} else if err != nil {
+			problems = append(problems, err)
 		}
 		for _, def := range defs {
 			merged[def.Name] = def
@@ -57,9 +92,11 @@ func DiscoverFromDirs(dirs []string) ([]Definition, error) {
 		defs = append(defs, def)
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
-	return defs, nil
+	return defs, discoveryError(problems)
 }
 
+// DiscoverFromDir loads the agents in dir. It returns every definition that
+// loaded, and a *DiscoveryError naming the files it skipped.
 func DiscoverFromDir(dir string) ([]Definition, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, nil
@@ -69,22 +106,24 @@ func DiscoverFromDir(dir string) ([]Definition, error) {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("reading agents directory: %w", err)
+		return nil, discoveryError([]error{fmt.Errorf("reading agents directory: %w", err)})
 	}
 
 	var defs []Definition
+	var problems []error
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".md" {
 			continue
 		}
 		def, err := LoadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
-			return nil, err
+			problems = append(problems, err)
+			continue
 		}
 		defs = append(defs, def)
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
-	return defs, nil
+	return defs, discoveryError(problems)
 }
 
 func Load(cwd, name string) (Definition, error) {
@@ -185,6 +224,7 @@ func LoadFile(path string) (Definition, error) {
 		Reasoning:    fm.Reasoning,
 		Temperature:  fm.Temperature,
 		Permission:   fm.Permission,
+		Plan:         fm.Plan,
 		SystemPrompt: body,
 		Path:         absPath,
 	}, nil
@@ -209,6 +249,13 @@ func Parse(content []byte) (Frontmatter, string, error) {
 		}
 		fm.Temperature = &value
 	}
+	if plan := strings.TrimSpace(parsed.Fields["plan"]); plan != "" {
+		value, err := strconv.ParseBool(plan)
+		if err != nil {
+			return Frontmatter{}, "", fmt.Errorf("invalid frontmatter plan: must be true or false")
+		}
+		fm.Plan = value
+	}
 	if fm.Description == "" {
 		return Frontmatter{}, "", fmt.Errorf("frontmatter missing required field: description")
 	}
@@ -221,6 +268,7 @@ func Parse(content []byte) (Frontmatter, string, error) {
 	return fm, parsed.Body, nil
 }
 
+// DisabledTools lists the tools an agent's permission map turns off.
 func DisabledTools(permission map[string]string) map[string]bool {
 	disabled := map[string]bool{}
 	for key, value := range permission {

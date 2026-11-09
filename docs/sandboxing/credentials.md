@@ -65,4 +65,7 @@ variables.
 Go commands keep their reusable build and module caches under
 `.caretz/scratch/` instead of creating `Library/` or `go/` directories at the
 workspace root. You can delete this scratch directory safely to reclaim space;
-Go rebuilds the caches on the next command.
+Go rebuilds the caches on the next command. It stays writable when the rest of
+the workspace is read-only, in [plan mode](../cli/plan-mode.md) and for
+[background subagents](../customization/background.md), unless `.caretz` or
+`.caretz/scratch` is a symlink.

@@ -23,7 +23,13 @@ const Model = "fake-model"
 type Turn struct {
 	Text      string
 	ToolCalls []ToolCall
+	// Hang never answers: the request blocks until caretz goes away. It lets a
+	// test kill caretz at a known point; Server.Hung reports when it is reached.
+	Hang bool
 }
+
+// Hang scripts a reply that never comes.
+func Hang() Turn { return Turn{Hang: true} }
 
 // ToolCall is a function call the fake model asks caretz to run.
 type ToolCall struct {
@@ -44,19 +50,26 @@ func Call(name, arguments string) Turn {
 type Server struct {
 	// URL is the base URL to pass to caretz --base-url (it ends in /v1).
 	URL string
+	// Expand, when set, rewrites tool call arguments as they are sent, for
+	// values only known once caretz has run, such as a child session ID.
+	Expand func(arguments string) string
 
 	t        testing.TB
 	srv      *httptest.Server
 	mu       sync.Mutex
 	turns    []Turn
 	requests []Request
+
+	hung     chan struct{} // closed when a Hang turn is requested
+	hungOnce sync.Once
+	closing  chan struct{} // closed when the test ends, releasing hung requests
 }
 
 // New starts a fake server that replies with turns in order. The server is
 // closed when the test ends, and the test fails if any turn was not consumed.
 func New(t testing.TB, turns ...Turn) *Server {
 	t.Helper()
-	s := &Server{t: t, turns: turns}
+	s := &Server{t: t, turns: turns, hung: make(chan struct{}), closing: make(chan struct{})}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/models", s.handleModels)
 	mux.HandleFunc("POST /v1/chat/completions", s.handleChat)
@@ -67,6 +80,7 @@ func New(t testing.TB, turns ...Turn) *Server {
 	s.srv = httptest.NewServer(mux)
 	s.URL = s.srv.URL + "/v1"
 	t.Cleanup(func() {
+		close(s.closing)
 		s.srv.Close()
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -83,6 +97,9 @@ func (s *Server) Push(turns ...Turn) {
 	defer s.mu.Unlock()
 	s.turns = append(s.turns, turns...)
 }
+
+// Hung is closed once caretz requests a Hang turn.
+func (s *Server) Hung() <-chan struct{} { return s.hung }
 
 // Requests returns every chat request received so far, in order.
 func (s *Server) Requests() []Request {
@@ -136,7 +153,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.turns = s.turns[1:]
 	s.mu.Unlock()
 
+	if turn.Hang {
+		s.hungOnce.Do(func() { close(s.hung) })
+		select {
+		case <-r.Context().Done():
+		case <-s.closing:
+		}
+		return
+	}
+	turn.ToolCalls = append([]ToolCall(nil), turn.ToolCalls...)
 	for i := range turn.ToolCalls {
+		if s.Expand != nil {
+			turn.ToolCalls[i].Arguments = s.Expand(turn.ToolCalls[i].Arguments)
+		}
 		if turn.ToolCalls[i].ID == "" {
 			turn.ToolCalls[i].ID = fmt.Sprintf("call_%d_%d", n, i)
 		}

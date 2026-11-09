@@ -62,6 +62,48 @@ func TestReplayMessagesRendersRestoredConversation(t *testing.T) {
 	}
 }
 
+// /bg log draws a subagent's conversation like a live turn: tool calls in
+// both modes, tool output only in detailed mode, and the answer as Markdown.
+func TestRenderSubagentLogDrawsTheConversationLikeTheChat(t *testing.T) {
+	call := llm.ToolCall{ID: "tc1", Name: "Grep", Arguments: `{"pattern":"ParseConfig"}`}
+	log := agent.SubagentLog{
+		Run: agent.SubagentRun{Name: "searcher", Status: agent.SubagentCompleted, ChildSessionID: "p-subagent-searcher-1", Task: "find callers"},
+		Entries: []agent.SubagentLogEntry{
+			{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{call}}},
+			{Message: llm.Message{Role: llm.RoleTool, ToolCallID: "tc1", Content: "config/load.go:42"}, Tool: call},
+			{Message: llm.Message{Role: llm.RoleTool, ToolCallID: "tc2", Content: "error: access denied"}, Tool: llm.ToolCall{ID: "tc2", Name: "Read"}},
+			{Message: llm.Message{Role: llm.RoleAssistant, Content: "Found **3** callers."}, Final: true},
+		},
+	}
+	for _, tt := range []struct {
+		mode       Mode
+		want, skip []string
+	}{
+		{mode: ModeCompact, want: []string{"searcher: completed", "p-subagent-searcher-1", "Grep", "ParseConfig", "access denied", "Found", "callers."}, skip: []string{"config/load.go:42", "**"}},
+		{mode: ModeDetailed, want: []string{"searcher: completed", "Grep", "config/load.go:42", "access denied", "Found", "callers."}, skip: []string{"**"}},
+	} {
+		t.Run(string(tt.mode), func(t *testing.T) {
+			out := NewCLIOutput(tt.mode)
+			got := captureStderr(t, func() { out.RenderSubagentLog(log) })
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("missing %q in:\n%s", want, got)
+				}
+			}
+			for _, skip := range tt.skip {
+				if strings.Contains(got, skip) {
+					t.Errorf("unexpected %q in:\n%s", skip, got)
+				}
+			}
+		})
+	}
+
+	empty := captureStderr(t, func() { NewCLIOutput(ModeCompact).RenderSubagentLog(agent.SubagentLog{Run: log.Run}) })
+	if !strings.Contains(empty, "no activity yet") {
+		t.Fatalf("empty log:\n%s", empty)
+	}
+}
+
 func TestHandleLLMUserMessageCreatedRendersPrompt(t *testing.T) {
 	out := NewCLIOutput(ModeDetailed)
 	event := eventing.NewLLMUserMessage("session", "parent", 1, llm.Message{
