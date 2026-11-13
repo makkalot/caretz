@@ -20,7 +20,7 @@ import (
 )
 
 func validSessionAdapter(adapter string) bool {
-	return adapter == "" || adapter == "cli" || adapter == "tui" || adapter == "slack" || adapter == "telegram"
+	return adapter == "" || adapter == "cli" || adapter == "tui" || adapter == "slack" || adapter == "telegram" || adapter == peerAdapter
 }
 
 func resolveSessionLocation(workspace, configRoot string, configRootSet bool) (string, error) {
@@ -51,7 +51,7 @@ type sessionCommandOptions struct {
 type sessionLocationOptions struct {
 	Workspace  string `flag:"workspace" help:"Workspace directory used to discover .caretz" group:"Session location"`
 	ConfigRoot string `flag:"config-root" help:"Directory containing sessions; overrides CARETZ_CONFIG_ROOT" group:"Session location"`
-	Adapter    string `flag:"adapter" help:"Adapter namespace: cli, tui, slack, or telegram" group:"Session location"`
+	Adapter    string `flag:"adapter" help:"Adapter namespace: cli, tui, slack, telegram, or peer" group:"Session location"`
 }
 
 func runSessionCommand(action string, args []string, commandOpts sessionCommandOptions, stdout, stderr io.Writer, opts Options) int {
@@ -61,7 +61,7 @@ func runSessionCommand(action string, args []string, commandOpts sessionCommandO
 	includeSubagents := commandOpts.IncludeSubagents
 	fromVersion := commandOpts.FromVersion
 	if !validSessionAdapter(strings.TrimSpace(adapter)) {
-		output.Errorf(stderr, "invalid adapter %q: must be one of cli, tui, slack, telegram", adapter)
+		output.Errorf(stderr, "invalid adapter %q: must be one of cli, tui, slack, telegram, peer", adapter)
 		return 2
 	}
 	if action == "trim" && fromVersion == 0 {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	ctxstore "github.com/makkalot/caretz/internal/context"
@@ -62,6 +63,7 @@ type AgentSession struct {
 	activeChildrenMu        sync.Mutex
 	activeChildren          map[string]struct{} // open child sessions, by channel ID
 	onClose                 func()
+	asyncTurnRunner         atomic.Pointer[AsyncTurnRunner]
 	integrationMu           sync.Mutex
 	integrations            map[string]sessiontools.Integration
 	integrationFactories    []sessiontools.Factory
