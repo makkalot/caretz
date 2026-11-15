@@ -22,6 +22,7 @@ type openAIProvider struct {
 	httpClient      *http.Client
 	requestTimeout  time.Duration
 	reasoningEffort string
+	params          map[string]json.RawMessage
 	protocol        string
 	maxAttempts     int
 	initialBackoff  time.Duration
@@ -45,9 +46,13 @@ type OpenAIProviderOptions struct {
 	InitialBackoff        time.Duration
 	MaxBackoff            time.Duration
 	ReasoningEffort       string
-	Protocol              string
-	Logf                  func(string, ...any)
-	HTTPClient            *http.Client
+	// Params are extra top-level request fields, such as temperature or a
+	// server-specific option, merged into every chat request. Keys caretz
+	// sets itself (see IsReservedRequestParam) are ignored.
+	Params     map[string]json.RawMessage
+	Protocol   string
+	Logf       func(string, ...any)
+	HTTPClient *http.Client
 	// ChatGPTPlan shapes requests for ChatGPT plan usage ("Sign in with
 	// ChatGPT"): Responses API only, store:false, developer instead of system
 	// items, and the session ID as prompt_cache_key. HTTPClient must then
@@ -266,6 +271,7 @@ func NewOpenAIProviderWithOptions(apiKey, baseURL, model string, opts OpenAIProv
 		httpClient:      httpClient,
 		requestTimeout:  opts.RequestTimeout,
 		reasoningEffort: strings.TrimSpace(opts.ReasoningEffort),
+		params:          opts.Params,
 		protocol:        normalizeProtocol(opts.Protocol),
 		maxAttempts:     opts.MaxAttempts,
 		initialBackoff:  opts.InitialBackoff,
@@ -871,8 +877,52 @@ func (p *openAIProvider) chatNonStreaming(ctx context.Context, params chatComple
 	}, nil
 }
 
-func (p *openAIProvider) postJSON(ctx context.Context, path string, payload any, stream bool) (*http.Response, error) {
+// reservedRequestParams are request fields caretz builds itself. Extra
+// params may not replace them: they carry the conversation and the
+// protocol's plumbing, and reasoning effort has its own setting so a
+// session-level override still applies.
+var reservedRequestParams = map[string]bool{
+	"model":            true,
+	"messages":         true,
+	"input":            true,
+	"instructions":     true,
+	"tools":            true,
+	"stream":           true,
+	"stream_options":   true,
+	"store":            true,
+	"prompt_cache_key": true,
+	"reasoning":        true,
+	"reasoning_effort": true,
+}
+
+// IsReservedRequestParam reports whether key is a request field caretz sets
+// itself, which OpenAIProviderOptions.Params can't override.
+func IsReservedRequestParam(key string) bool {
+	return reservedRequestParams[key]
+}
+
+// requestBody encodes payload and merges the provider's extra params into
+// its top-level object. Reserved fields keep caretz's value.
+func (p *openAIProvider) requestBody(payload any) ([]byte, error) {
 	body, err := json.Marshal(payload)
+	if err != nil || len(p.params) == 0 {
+		return body, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, fmt.Errorf("merge request params: %w", err)
+	}
+	for key, value := range p.params {
+		if IsReservedRequestParam(key) {
+			continue
+		}
+		fields[key] = value
+	}
+	return json.Marshal(fields)
+}
+
+func (p *openAIProvider) postJSON(ctx context.Context, path string, payload any, stream bool) (*http.Response, error) {
+	body, err := p.requestBody(payload)
 	if err != nil {
 		return nil, err
 	}

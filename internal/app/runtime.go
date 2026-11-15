@@ -187,7 +187,7 @@ func (rt *Runtime) NewAdapterSession(adapterType, channelID string, opts Adapter
 		PermissionTimeout: rt.PermissionTimeout,
 		Model: &caretz.ModelOptions{
 			APIKey: settings.APIKey, BaseURL: settings.BaseURL, Model: settings.Model,
-			Protocol: settings.Protocol, ReasoningEffort: settings.ReasoningEffort,
+			Protocol: settings.Protocol, ReasoningEffort: settings.ReasoningEffort, Params: settings.Params,
 			ContextWindow: settings.ContextWindow, ReservedTokens: settings.ReservedTokens,
 			KeepRecentTokens: settings.KeepRecentTokens, SummaryTokens: settings.SummaryTokens,
 			Timeout: settings.LLMTimeout, MaxAttempts: settings.LLMMaxAttempts,
@@ -586,6 +586,7 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 		DisableRequestTimeout: runtimeConfig.LLMTimeout == 0,
 		MaxAttempts:           runtimeConfig.LLMMaxAttempts,
 		ReasoningEffort:       runtimeConfig.ReasoningEffort,
+		Params:                runtimeConfig.Params,
 		Protocol:              runtimeConfig.Protocol,
 		Logf:                  logger.Info,
 	})
@@ -600,6 +601,7 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 			BaseURL:          runtimeConfig.BaseURL,
 			Model:            runtimeConfig.Model,
 			ReasoningEffort:  runtimeConfig.ReasoningEffort,
+			Params:           runtimeConfig.Params,
 			Protocol:         runtimeConfig.Protocol,
 			ContextWindow:    runtimeConfig.ContextWindow,
 			ReservedTokens:   runtimeConfig.ReservedTokens,

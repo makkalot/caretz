@@ -220,6 +220,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 			Model:            runtimeConfig.Model,
 			Protocol:         runtimeConfig.Protocol,
 			ReasoningEffort:  runtimeConfig.ReasoningEffort,
+			Params:           runtimeConfig.Params,
 			ContextWindow:    runtimeConfig.ContextWindow,
 			ReservedTokens:   runtimeConfig.ReservedTokens,
 			KeepRecentTokens: runtimeConfig.KeepRecentTokens,
@@ -294,6 +295,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 			DisableRequestTimeout: runtimeConfig.LLMTimeout == 0,
 			MaxAttempts:           runtimeConfig.LLMMaxAttempts,
 			ReasoningEffort:       settings.ReasoningEffort,
+			Params:                settings.Params,
 			Protocol:              settings.Protocol,
 			Logf:                  logger.Info,
 		})

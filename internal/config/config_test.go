@@ -694,6 +694,72 @@ func TestResolveModelRef_UsesConfiguredProviderModel(t *testing.T) {
 	}
 }
 
+func TestResolveModelRef_AliasCarriesItsParams(t *testing.T) {
+	tmp := t.TempDir()
+	homePath := filepath.Join(tmp, "home.json")
+	writeFile(t, homePath, `{"provider":{"strata":{"options":{"baseURL":"http://strata/v1"},"models":{
+		"qwen":{"limit":{"context":128000}},
+		"qwen-chat":{"model":"qwen","reasoning":"low","params":{"temperature":0.7,"chat_template_kwargs":{"enable_thinking":true}},"limit":{"context":128000}},
+		"qwen-code":{"model":"qwen","reasoning":"high","limit":{"context":128000}}
+	}}}}`)
+	cfg, err := Load(homePath, filepath.Join(tmp, "missing-project.json"))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	chat, ok, err := cfg.ResolveModelRef("strata/qwen-chat")
+	if err != nil || !ok {
+		t.Fatalf("ResolveModelRef(qwen-chat) = %v, %v", ok, err)
+	}
+	if chat.Model != "qwen" || chat.ReasoningEffort != "low" || string(chat.Params["temperature"]) != "0.7" || string(chat.Params["chat_template_kwargs"]) != `{"enable_thinking":true}` {
+		t.Fatalf("qwen-chat resolved to %+v", chat)
+	}
+	code, ok, err := cfg.ResolveModelRef("strata/qwen-code")
+	if err != nil || !ok {
+		t.Fatalf("ResolveModelRef(qwen-code) = %v, %v", ok, err)
+	}
+	if code.Model != "qwen" || code.ReasoningEffort != "high" || code.Params != nil {
+		t.Fatalf("qwen-code resolved to %+v", code)
+	}
+	// The plain entry keeps the raw model ID resolvable next to its aliases.
+	plain, ok, err := cfg.ResolveModelRef("strata/qwen")
+	if err != nil || !ok || plain.ReasoningEffort != "" || plain.Params != nil || plain.ContextWindow != 128000 {
+		t.Fatalf("ResolveModelRef(qwen) = %+v, %v, %v", plain, ok, err)
+	}
+}
+
+func TestResolveModelRef_AmbiguousAliasNamesThem(t *testing.T) {
+	cfg := Config{Provider: map[string]Provider{"strata": {
+		Options: ProviderOptions{BaseURL: ptr("http://strata/v1")},
+		Models: map[string]Model{
+			"qwen-chat": {Model: "qwen"},
+			"qwen-code": {Model: "qwen"},
+		},
+	}}}
+	_, _, err := cfg.ResolveModelRef("strata/qwen")
+	if err == nil || !strings.Contains(err.Error(), "(qwen-chat, qwen-code)") || !strings.Contains(err.Error(), `model entry keyed "qwen"`) {
+		t.Fatalf("ResolveModelRef() error = %v, want the aliases named", err)
+	}
+}
+
+func TestLoad_RejectsReservedModelParams(t *testing.T) {
+	for _, tc := range []struct{ key, want string }{
+		{"reasoning_effort", `set the model's "reasoning" field instead`},
+		{"messages", "caretz sets it for every request"},
+		{"model", "caretz sets it for every request"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			tmp := t.TempDir()
+			homePath := filepath.Join(tmp, "home.json")
+			writeFile(t, homePath, `{"provider":{"strata":{"options":{"baseURL":"http://strata/v1"},"models":{"qwen":{"params":{"`+tc.key+`":"x"}}}}}}`)
+			_, err := Load(homePath, filepath.Join(tmp, "missing-project.json"))
+			if err == nil || !strings.Contains(err.Error(), "params."+tc.key) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load() error = %v, want params.%s rejected", err, tc.key)
+			}
+		})
+	}
+}
+
 func TestResolveModelRef_UnknownOrInvalidRefDoesNotMatch(t *testing.T) {
 	cfg := Config{
 		Provider: map[string]Provider{
@@ -865,7 +931,7 @@ func TestLoad_MissingFilesAreEmptyConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	if resolved != (Resolved{}) {
+	if !reflect.DeepEqual(resolved, Resolved{}) {
 		t.Fatalf("Resolve() = %+v, want zero value", resolved)
 	}
 }

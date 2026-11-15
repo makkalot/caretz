@@ -2,6 +2,7 @@ package caretz
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,11 +25,15 @@ import (
 )
 
 type ModelOptions struct {
-	BaseURL          string
-	APIKey           string
-	Model            string
-	Protocol         string
-	ReasoningEffort  string
+	BaseURL         string
+	APIKey          string
+	Model           string
+	Protocol        string
+	ReasoningEffort string
+	// Params are extra top-level request fields merged into every chat
+	// request, such as temperature or a server-specific option. Fields
+	// caretz sets itself (model, messages, tools, reasoning, ...) are ignored.
+	Params           map[string]json.RawMessage
 	ContextWindow    int
 	ReservedTokens   int
 	KeepRecentTokens int
@@ -209,6 +214,7 @@ func NewClient(ctx context.Context, opts ClientOptions) (*Client, error) {
 			DisableRequestTimeout: model.Timeout == 0,
 			MaxAttempts:           model.MaxAttempts,
 			ReasoningEffort:       model.ReasoningEffort,
+			Params:                model.Params,
 			Protocol:              model.Protocol,
 			Logf:                  logger.Info,
 		})
@@ -355,6 +361,7 @@ func (c *Client) NewSession(id string, opts SessionOptions) (*Session, error) {
 			DisableRequestTimeout: model.Timeout == 0,
 			MaxAttempts:           model.MaxAttempts,
 			ReasoningEffort:       model.ReasoningEffort,
+			Params:                model.Params,
 			Protocol:              model.Protocol,
 			Logf:                  c.logger.Info,
 		})
@@ -614,6 +621,7 @@ func hasModelOptions(opts ModelOptions) bool {
 		strings.TrimSpace(opts.APIKey) != "" ||
 		strings.TrimSpace(opts.Model) != "" ||
 		strings.TrimSpace(opts.ReasoningEffort) != "" ||
+		len(opts.Params) != 0 ||
 		opts.ContextWindow != 0 ||
 		opts.ReservedTokens != 0 ||
 		opts.KeepRecentTokens != 0 ||

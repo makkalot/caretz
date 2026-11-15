@@ -2,11 +2,14 @@ package app
 
 import (
 	"bufio"
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"os"
@@ -68,6 +71,14 @@ func modelSummary(settings runtimeSettings, source string) string {
 	if settings.ReasoningEffort != "" {
 		b.WriteString(" reasoning=" + settings.ReasoningEffort)
 	}
+	if len(settings.Params) > 0 {
+		keys := make([]string, 0, len(settings.Params))
+		for key := range settings.Params {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		b.WriteString(" params=" + strings.Join(keys, ","))
+	}
 	if settings.ContextWindow > 0 {
 		fmt.Fprintf(&b, " ctx=%d", settings.ContextWindow)
 	}
@@ -90,12 +101,15 @@ func modelSource(explicitSource string, restoredSession bool, settings runtimeSe
 }
 
 type runtimeSettings struct {
-	APIKey           string
-	BaseURL          string
-	Model            string
-	Protocol         string
-	ActiveModelRef   string
-	ReasoningEffort  string
+	APIKey          string
+	BaseURL         string
+	Model           string
+	Protocol        string
+	ActiveModelRef  string
+	ReasoningEffort string
+	// Params are the configured model's extra request fields. They belong
+	// to ActiveModelRef, so a raw --model or OPENAI_API_MODEL clears them.
+	Params           map[string]json.RawMessage
 	ContextWindow    int
 	ReservedTokens   int
 	KeepRecentTokens int
@@ -296,6 +310,7 @@ func (r subagentModelResolver) ResolveSubagentModel(ctx context.Context, request
 		DisableRequestTimeout: r.llmTimeout == 0,
 		MaxAttempts:           r.llmMaxAttempts,
 		ReasoningEffort:       settings.ReasoningEffort,
+		Params:                settings.Params,
 		Protocol:              settings.Protocol,
 		Logf:                  logf,
 	})
@@ -1100,6 +1115,7 @@ func resolveRuntimeSettings(fileConfig config.Config, flags runtimeFlagValues, g
 		Protocol:         resolvedConfig.Protocol,
 		ActiveModelRef:   fileConfig.ActiveModel,
 		ReasoningEffort:  resolvedConfig.ReasoningEffort,
+		Params:           resolvedConfig.Params,
 		ContextWindow:    resolvedConfig.ContextWindow,
 		ReservedTokens:   resolvedConfig.ReservedTokens,
 		KeepRecentTokens: resolvedConfig.KeepRecentTokens,
@@ -1150,6 +1166,7 @@ func resolveRuntimeSettings(fileConfig config.Config, flags runtimeFlagValues, g
 		settings.Model = envModel
 		settings.Protocol = ""
 		settings.ActiveModelRef = ""
+		settings.Params = nil
 	}
 	if envReasoningEffort := getenv("OPENAI_REASONING"); envReasoningEffort != "" {
 		settings.ReasoningEffort = strings.TrimSpace(envReasoningEffort)
@@ -1190,11 +1207,13 @@ func resolveRuntimeSettings(fileConfig config.Config, flags runtimeFlagValues, g
 				settings.Model = flags.Model
 				settings.Protocol = ""
 				settings.ActiveModelRef = ""
+				settings.Params = nil
 			}
 		} else {
 			settings.Model = flags.Model
 			settings.Protocol = ""
 			settings.ActiveModelRef = ""
+			settings.Params = nil
 		}
 	}
 	if flags.BaseURL != "" {
@@ -1278,6 +1297,7 @@ func overlayResolvedModelConfig(settings *runtimeSettings, resolved config.Resol
 		settings.Model = resolved.Model
 	}
 	settings.Protocol = resolved.Protocol
+	settings.Params = resolved.Params
 	if resolved.ReasoningEffort != "" {
 		settings.ReasoningEffort = resolved.ReasoningEffort
 	}
@@ -1295,6 +1315,11 @@ func overlayResolvedModelConfig(settings *runtimeSettings, resolved config.Resol
 	}
 }
 
+// sameRequestParams reports whether two models send the same extra params.
+func sameRequestParams(a, b map[string]json.RawMessage) bool {
+	return maps.EqualFunc(a, b, func(x, y json.RawMessage) bool { return bytes.Equal(x, y) })
+}
+
 func runtimeSettingsForModelSwitch(resolved config.Resolved) (runtimeSettings, error) {
 	settings := runtimeSettings{
 		APIKey:           resolved.APIKey,
@@ -1302,6 +1327,7 @@ func runtimeSettingsForModelSwitch(resolved config.Resolved) (runtimeSettings, e
 		Model:            resolved.Model,
 		Protocol:         resolved.Protocol,
 		ReasoningEffort:  resolved.ReasoningEffort,
+		Params:           resolved.Params,
 		ContextWindow:    resolved.ContextWindow,
 		ReservedTokens:   resolved.ReservedTokens,
 		KeepRecentTokens: resolved.KeepRecentTokens,

@@ -45,6 +45,8 @@ A model entry is only needed when you want to customize discovered metadata or
 use a model the endpoint does not advertise. Caretz uses the broadly compatible
 `chat-completions` protocol when `protocol` is omitted. Set
 `"protocol": "responses"` for models that require the OpenAI Responses API.
+To run one model with different settings under several names, see
+[Model presets](model-presets.md).
 
 `/models provider/model` saves the selection as `activeModel` in the project or
 config-root config file. Model IDs may contain `/`; only the first slash

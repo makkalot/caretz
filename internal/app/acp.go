@@ -1132,12 +1132,13 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 	}
 
 	provider := s.rt.Provider
-	if runtimeSettings.Model != s.rt.Settings.Model || runtimeSettings.ActiveModelRef != s.rt.Settings.ActiveModelRef || runtimeSettings.ReasoningEffort != s.rt.Settings.ReasoningEffort || runtimeSettings.BaseURL != s.rt.Settings.BaseURL || runtimeSettings.APIKey != s.rt.Settings.APIKey || runtimeSettings.Protocol != s.rt.Settings.Protocol {
+	if runtimeSettings.Model != s.rt.Settings.Model || runtimeSettings.ActiveModelRef != s.rt.Settings.ActiveModelRef || runtimeSettings.ReasoningEffort != s.rt.Settings.ReasoningEffort || !sameRequestParams(runtimeSettings.Params, s.rt.Settings.Params) || runtimeSettings.BaseURL != s.rt.Settings.BaseURL || runtimeSettings.APIKey != s.rt.Settings.APIKey || runtimeSettings.Protocol != s.rt.Settings.Protocol {
 		provider = chatgptauth.NewProvider(runtimeSettings.APIKey, runtimeSettings.BaseURL, runtimeSettings.Model, llm.OpenAIProviderOptions{
 			RequestTimeout:        runtimeSettings.LLMTimeout,
 			DisableRequestTimeout: runtimeSettings.LLMTimeout == 0,
 			MaxAttempts:           runtimeSettings.LLMMaxAttempts,
 			ReasoningEffort:       runtimeSettings.ReasoningEffort,
+			Params:                runtimeSettings.Params,
 			Protocol:              runtimeSettings.Protocol,
 			Logf:                  s.rt.Logger.Info,
 		})
@@ -1420,6 +1421,7 @@ func (s *acpServer) switchACPAgentSessionModel(ctx context.Context, session *age
 		DisableRequestTimeout: s.rt.Settings.LLMTimeout == 0,
 		MaxAttempts:           s.rt.Settings.LLMMaxAttempts,
 		ReasoningEffort:       settings.ReasoningEffort,
+		Params:                settings.Params,
 		Protocol:              settings.Protocol,
 		Logf:                  s.rt.Logger.Info,
 	})

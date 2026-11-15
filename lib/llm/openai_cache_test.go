@@ -216,6 +216,95 @@ func TestOpenAIRequestShapeOmitsReasoningEffortWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestOpenAIRequestBodyMergesParamsAndKeepsReservedFields(t *testing.T) {
+	provider := NewOpenAIProviderWithOptions("test-key", "http://mock", "mock-model", OpenAIProviderOptions{
+		ReasoningEffort: "low",
+		Params: map[string]json.RawMessage{
+			"temperature":           json.RawMessage(`0.7`),
+			"chat_template_kwargs":  json.RawMessage(`{"enable_thinking":false}`),
+			"model":                 json.RawMessage(`"other-model"`),
+			"reasoning_effort":      json.RawMessage(`"xhigh"`),
+			"experimental_override": json.RawMessage(`true`),
+		},
+	}).(*openAIProvider)
+
+	for _, tc := range []struct {
+		name    string
+		payload any
+	}{
+		{"chat-completions", provider.chatCompletionParams("", []Message{{Role: RoleUser, Content: "hello"}}, nil)},
+		{"responses", provider.responseNewParams("", []Message{{Role: RoleUser, Content: "hello"}}, nil)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := provider.requestBody(tc.payload)
+			if err != nil {
+				t.Fatalf("requestBody() error = %v", err)
+			}
+			var fields map[string]any
+			if err := json.Unmarshal(body, &fields); err != nil {
+				t.Fatalf("decode body: %v", err)
+			}
+			if fields["model"] != "mock-model" {
+				t.Fatalf("model = %v, want caretz's mock-model; body %s", fields["model"], body)
+			}
+			if fields["temperature"] != 0.7 || fields["experimental_override"] != true {
+				t.Fatalf("params not merged: %s", body)
+			}
+			kwargs, _ := fields["chat_template_kwargs"].(map[string]any)
+			if kwargs["enable_thinking"] != false {
+				t.Fatalf("nested param not merged: %s", body)
+			}
+			if tc.name == "chat-completions" && fields["reasoning_effort"] != "low" {
+				t.Fatalf("reasoning_effort = %v, want the reasoning setting low; body %s", fields["reasoning_effort"], body)
+			}
+			if tc.name == "responses" {
+				if _, ok := fields["reasoning_effort"]; ok {
+					t.Fatalf("reserved reasoning_effort leaked into a responses request: %s", body)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenAIRequestBodyWithoutParamsIsUnchanged(t *testing.T) {
+	provider := NewOpenAIProvider("test-key", "http://mock", "mock-model").(*openAIProvider)
+	params := provider.chatCompletionParams("", []Message{{Role: RoleUser, Content: "hello"}}, nil)
+	want, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := provider.requestBody(params)
+	if err != nil {
+		t.Fatalf("requestBody() error = %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("requestBody() = %s, want %s", got, want)
+	}
+}
+
+func TestOpenAIChatSendsParams(t *testing.T) {
+	var fields map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&fields); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"ok"}}],"usage":null}` + "\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAIProviderWithOptions("test-key", server.URL+"/v1", "mock-model", OpenAIProviderOptions{
+		Params: map[string]json.RawMessage{"max_tokens": json.RawMessage(`4096`)},
+	})
+	if _, err := provider.Chat("", []Message{{Role: RoleUser, Content: "hello"}}, nil, nil); err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if fields["max_tokens"] != float64(4096) || fields["stream"] != true {
+		t.Fatalf("request = %v, want max_tokens=4096 and stream=true", fields)
+	}
+}
+
 func TestOpenAIResponsesRequestShapeUsesReasoningSummaryAndToolCallIDs(t *testing.T) {
 	provider := NewOpenAIProviderWithOptions("test-key", "http://mock", "mock-model", OpenAIProviderOptions{
 		ReasoningEffort: "high",
