@@ -27,29 +27,21 @@ func (o *CLIOutput) HandleLoopGuardJudged(e *types.Event) error {
 // mode.
 func writeLoopGuardJudged(w io.Writer, style Style, mode Mode, record agent.LoopGuardJudged) {
 	prefix := style.Agent("[loop-guard]")
-	if record.Error != "" {
-		_, _ = fmt.Fprintf(w, "%s %s\n", prefix, style.Warning("judge failed, ignored: "+truncateLine(record.Error, 140)))
-		return
-	}
 	v := record.Verdict
-	verdict := fmt.Sprintf("not stuck (%.2f)", v.Confidence)
-	if v.Stuck {
-		verdict = fmt.Sprintf("stuck (%.2f)", v.Confidence)
-	}
+	outcome := truncateLine(record.Outcome(), 170)
 	var action string
 	switch {
-	case record.Redirected:
-		action = style.Warning(verdict + " → redirected the agent")
 	case record.Escalated:
-		action = style.Error(verdict + " → still stuck after redirect, ending the turn")
-	case v.Stuck && record.Mode == "shadow":
-		action = style.Warning(verdict + " → shadow mode, no redirect")
-	case v.Stuck:
-		action = style.Muted(verdict + " → below confidence threshold, no redirect")
+		action = style.Error(outcome)
+	case record.Error != "", record.Redirected, v.Stuck && record.Mode == "shadow":
+		action = style.Warning(outcome)
 	default:
-		action = style.Muted(verdict)
+		action = style.Muted(outcome)
 	}
 	_, _ = fmt.Fprintf(w, "%s %s\n", prefix, action)
+	if record.Error != "" {
+		return
+	}
 	if v.Reason != "" {
 		_, _ = fmt.Fprintf(w, "  %s\n", style.Muted("reason: "+truncateLine(v.Reason, 200)))
 	}

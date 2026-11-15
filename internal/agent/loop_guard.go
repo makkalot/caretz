@@ -201,6 +201,30 @@ type LoopGuardJudged struct {
 
 const LoopGuardJudgedEvent = "LoopGuard.Judged"
 
+// Outcome is the verdict and what the guard did about it, in one line, so
+// the main session's output and subagent progress word it the same way.
+func (r LoopGuardJudged) Outcome() string {
+	if r.Error != "" {
+		return "judge failed, ignored: " + r.Error
+	}
+	v := r.Verdict
+	verdict := fmt.Sprintf("not stuck (%.2f)", v.Confidence)
+	if v.Stuck {
+		verdict = fmt.Sprintf("stuck (%.2f)", v.Confidence)
+	}
+	switch {
+	case r.Redirected:
+		return verdict + " → redirected the agent"
+	case r.Escalated:
+		return verdict + " → still stuck after redirect, ending the turn"
+	case v.Stuck && r.Mode == string(loopguard.ModeShadow):
+		return verdict + " → shadow mode, no redirect"
+	case v.Stuck:
+		return verdict + " → below confidence threshold, no redirect"
+	}
+	return verdict
+}
+
 // afterToolResult records one tool result and, on the last result of a
 // batch with a trigger armed, runs the judge and keeps any note it produces
 // for the agent's next requests. It never fails the turn.

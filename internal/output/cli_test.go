@@ -909,6 +909,31 @@ func TestHandleSubagentProgressShowsToolCallsOnly(t *testing.T) {
 	}
 }
 
+func TestHandleSubagentProgressShowsLoopGuard(t *testing.T) {
+	out := NewCLIOutput(ModeCompact)
+	for _, name := range []string{"reviewer", "goal-worker"} {
+		events := []*types.Event{
+			eventing.NewSubagentInvocationProgress("session", name, "child-123", "parent-456", "subagent "+name+" loop-guard: judging: repeat: 3×", llm.Usage{}, 0, 100, 200),
+			eventing.NewSubagentInvocationProgress("session", name, "child-123", "parent-456", "subagent "+name+" loop-guard: stuck (0.90) → redirected the agent · Foo is never declared", llm.Usage{}, 0, 100, 200),
+		}
+		got := captureStderr(t, func() {
+			for _, event := range events {
+				if err := out.HandleSubagentInvocation(event); err != nil {
+					t.Fatalf("HandleSubagentInvocation() error = %v", err)
+				}
+			}
+		})
+		for _, want := range []string{
+			"[loop-guard] judging: repeat: 3×",
+			"[loop-guard] stuck (0.90) → redirected the agent · Foo is never declared",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("%s: loop-guard progress missing %q: %q", name, want, got)
+			}
+		}
+	}
+}
+
 func TestHandleGoalWorkerProgressSummarizesLongArguments(t *testing.T) {
 	out := NewCLIOutput(ModeCompact)
 	name := "loop-cc62c8d1-task-6-attempt-6"

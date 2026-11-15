@@ -984,6 +984,12 @@ func (o *CLIOutput) HandleSubagentInvocation(e *types.Event) error {
 	if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
 		return err
 	}
+	if e.EventType == eventing.SubagentInvocationProgress {
+		if text, ok := agent.SubagentLoopGuardProgress(payload.Name, payload.Message); ok {
+			o.renderSubagentLoopGuard(payload.Name, text)
+			return nil
+		}
+	}
 	if strings.HasPrefix(payload.Name, "goal-") && e.EventType != eventing.SubagentInvocationProgress {
 		o.renderGoalInvocation(e.EventType, payload)
 		return nil
@@ -1023,6 +1029,18 @@ func (o *CLIOutput) HandleSubagentInvocation(e *types.Event) error {
 		_, _ = fmt.Fprintf(os.Stderr, "%s\n", o.stderrStyle.Error(fmt.Sprintf("[Subagent %s failed: %s]", payload.Name, payload.Error)))
 	}
 	return nil
+}
+
+// renderSubagentLoopGuard shows a subagent's loop-guard notice or verdict
+// under the subagent's prefix, highlighting the ones that change its course.
+func (o *CLIOutput) renderSubagentLoopGuard(name, text string) {
+	prefix := o.stderrStyle.Agent(subagentPrefix(name)) + " " + o.stderrStyle.Agent("[loop-guard]")
+	text = truncateLine(text, 200)
+	styled := o.stderrStyle.Warning(text)
+	if strings.HasPrefix(text, "judging: ") || strings.HasPrefix(text, "not stuck ") {
+		styled = o.stderrStyle.Muted(text)
+	}
+	_, _ = fmt.Fprintf(os.Stderr, "%s %s\n", prefix, styled)
 }
 
 // subagentFailure is the one wording for a failed subagent run in block

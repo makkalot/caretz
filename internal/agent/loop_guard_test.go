@@ -381,6 +381,53 @@ func TestLoopGuardInheritedByChildSessions(t *testing.T) {
 	}
 }
 
+func TestLoopGuardSubagentReportsToParent(t *testing.T) {
+	provider := &loopGuardProvider{steps: 5, judgeReply: stuckVerdict}
+	session := newLoopGuardSession(t, filepath.Join(t.TempDir(), "sessions"), provider, []string{"undefined: Foo"})
+	session.SetLoopGuard(loopguard.Config{Mode: loopguard.ModeActive})
+	child, err := session.NewChildSession("child")
+	if err != nil {
+		t.Fatalf("NewChildSession() error = %v", err)
+	}
+	defer func() { _ = child.Close() }()
+	if err := RegisterSubagentProgressHandlers(session, child, "worker"); err != nil {
+		t.Fatal(err)
+	}
+	var guardLines []string
+	if err := session.OnAuditEvent(eventing.SubagentInvocationProgress, func(e *types.Event) error {
+		var payload eventing.SubagentInvocation
+		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
+			return err
+		}
+		if text, ok := SubagentLoopGuardProgress(payload.Name, payload.Message); ok {
+			guardLines = append(guardLines, text)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := child.Call(context.Background(), "make the tests pass"); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	want := []string{"judging: repeat: 3×", "stuck (0.90) → redirected the agent · Foo is never declared"}
+	if len(guardLines) != len(want) {
+		t.Fatalf("parent loop-guard progress = %q, want %d lines", guardLines, len(want))
+	}
+	for i, w := range want {
+		if !strings.HasPrefix(guardLines[i], w) {
+			t.Fatalf("parent loop-guard progress[%d] = %q, want prefix %q", i, guardLines[i], w)
+		}
+	}
+}
+
+func TestSubagentLoopGuardActivityIgnoresOtherStatuses(t *testing.T) {
+	raw, _ := json.Marshal(eventing.Status{Source: "goal", Message: "planning"})
+	if _, ok, err := subagentLoopGuardActivity("worker", eventing.StatusUpdated, raw); err != nil || ok {
+		t.Fatalf("other status: ok = %v, err = %v; want ignored", ok, err)
+	}
+}
+
 func TestLoopGuardOnlyWatchesListedModels(t *testing.T) {
 	refs := func(model, baseURL string) []string {
 		if baseURL != "http://mock" {
