@@ -164,6 +164,56 @@ func appendReadOnlyRootBinds(args []string, readOnlyRoots []string, coveredRoots
 	return args, coveredRoots
 }
 
+// sshConfigDropInDir holds the system ssh_config drop-ins that Debian and
+// Ubuntu's /etc/ssh/ssh_config includes, such as systemd's
+// 20-systemd-ssh-proxy.conf.
+var sshConfigDropInDir = "/etc/ssh/ssh_config.d"
+
+// copySSHConfigDropIns works around ssh refusing its own system config in
+// the sandbox. OpenSSH requires every Included file to be owned by root or
+// the current user, but inside bubblewrap's user namespace host root shows
+// as nobody, so a single drop-in makes ssh, and with it git over SSH, exit
+// with "Bad owner or permissions". It copies the drop-ins into a private
+// directory owned by the user and returns bubblewrap arguments that bind
+// the copy over the original, plus a cleanup that removes it.
+//
+// It never fails the command: when there is nothing to copy, or copying
+// fails, it returns no arguments and ssh sees the host directory as before.
+// Call it before adding hidden-path masks, so a masked drop-in stays masked.
+func copySSHConfigDropIns() ([]string, func()) {
+	noop := func() {}
+	entries, err := os.ReadDir(sshConfigDropInDir)
+	if err != nil || len(entries) == 0 {
+		return nil, noop
+	}
+	dir, err := os.MkdirTemp("", "caretz-ssh-config-*")
+	if err != nil {
+		return nil, noop
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	if err := os.Chmod(dir, 0o755); err != nil {
+		cleanup()
+		return nil, noop
+	}
+	for _, entry := range entries {
+		source := filepath.Join(sshConfigDropInDir, entry.Name())
+		// Stat follows symlinks: systemd's drop-in links into /usr/lib.
+		info, err := os.Stat(source)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(source)
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, entry.Name()), data, 0o644); err != nil {
+			cleanup()
+			return nil, noop
+		}
+	}
+	return []string{"--ro-bind", dir, sshConfigDropInDir}, cleanup
+}
+
 // bwrapArgs returns bubblewrap arguments to set up a sandboxed environment.
 // binaryPath is the full path to the sandboxed binary (for read-only access).
 func bwrapArgs(workDir, binaryPath string, unrestrictedNetwork bool, extraBinaries []string, readOnly bool, readableRoots []string, writableRoots []string, proxySocketDir string) []string {
@@ -331,6 +381,9 @@ func (r *Runner) RunContextOptions(ctx context.Context, cwd, command string, opt
 	readableRoots := append(append([]string{}, r.config.ReadableRoots...), opts.ReadableRoots...)
 	writableRoots := append(append([]string{}, r.config.WritableRoots...), opts.WritableRoots...)
 	args := bwrapArgs(cwd, selfExe, r.config.UnrestrictedNetwork, r.config.ExtraBinaries, r.config.ReadOnly, readableRoots, writableRoots, proxySocketDir)
+	sshConfigArgs, removeSSHConfig := copySSHConfigDropIns()
+	defer removeSSHConfig()
+	args = append(args, sshConfigArgs...)
 	maskConfig := r.config
 	maskConfig.ReadableRoots, maskConfig.WritableRoots = readableRoots, writableRoots
 	masks, err := discoverFilesystemMasks(maskConfig, cwd)

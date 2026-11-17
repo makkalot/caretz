@@ -46,6 +46,7 @@ var sandboxCapabilities = map[string]sandboxCapability{
 	"linux.gpu-devices":           {only: "linux", why: "bubblewrap gives commands a minimal /dev, so GPU device nodes must be bound in; macOS reaches the GPU through IOKit, not device nodes"},
 	"linux.system-bus":            {only: "linux", why: "macOS has no system D-Bus; Linux masks the bus socket under /run unless allowSystemBus is set for a non-root user"},
 	"linux.var-run-link":          {only: "linux", why: "bubblewrap builds a fresh filesystem view and must recreate the host's /var/run -> /run link; Seatbelt filters the real filesystem"},
+	"linux.ssh-config-owner":      {only: "linux", why: "bubblewrap's user namespace shows host root as nobody, which ssh rejects on Included config files; Seatbelt keeps real file owners (shared git-over-SSH behavior is in conformance_test.go)"},
 }
 
 var sandboxPlatforms = []string{"darwin", "linux"}

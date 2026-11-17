@@ -736,3 +736,64 @@ func TestAppendGPUDevicesBindsHostNodesOnlyWhenAllowed(t *testing.T) {
 		}
 	}
 }
+
+// parity: linux.ssh-config-owner
+func TestCopySSHConfigDropInsGivesUserOwnedCopy(t *testing.T) {
+	original := sshConfigDropInDir
+	t.Cleanup(func() { sshConfigDropInDir = original })
+	host := t.TempDir()
+	sshConfigDropInDir = filepath.Join(host, "ssh_config.d")
+	if err := os.Mkdir(sshConfigDropInDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// systemd's drop-in is a symlink into /usr/lib.
+	target := filepath.Join(host, "20-systemd-ssh-proxy.conf")
+	if err := os.WriteFile(target, []byte("Host unix/*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(sshConfigDropInDir, "20-systemd-ssh-proxy.conf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sshConfigDropInDir, "50-site.conf"), []byte("Host *\n"), 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(sshConfigDropInDir, "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	args, cleanup := copySSHConfigDropIns()
+	if len(args) != 3 || args[0] != "--ro-bind" || args[2] != sshConfigDropInDir {
+		t.Fatalf("args = %v", args)
+	}
+	copyDir := args[1]
+	for name, want := range map[string]string{"20-systemd-ssh-proxy.conf": "Host unix/*\n", "50-site.conf": "Host *\n"} {
+		path := filepath.Join(copyDir, name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// ssh accepts an Included file owned by the user and not group or
+		// world writable.
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
+			t.Fatalf("%s: mode %v uid %d", name, info.Mode(), info.Sys().(*syscall.Stat_t).Uid)
+		}
+		if data, _ := os.ReadFile(path); string(data) != want {
+			t.Fatalf("%s = %q, want %q", name, data, want)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(copyDir, "nested")); err == nil {
+		t.Fatal("copied a directory")
+	}
+	cleanup()
+	if _, err := os.Stat(copyDir); !os.IsNotExist(err) {
+		t.Fatalf("copy survived cleanup: %v", err)
+	}
+
+	// Without drop-ins there is nothing to bind.
+	sshConfigDropInDir = filepath.Join(host, "missing")
+	if args, cleanup := copySSHConfigDropIns(); len(args) != 0 {
+		t.Fatalf("args without drop-ins = %v", args)
+	} else {
+		cleanup()
+	}
+}

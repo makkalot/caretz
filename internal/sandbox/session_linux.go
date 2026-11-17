@@ -141,6 +141,15 @@ func (r *Runner) startSessionSupervisor(cwd string, direct bool, tmpDir string) 
 	var cmd *exec.Cmd
 	var proxy *linuxSandboxProxy
 	var masks []hiddenPathMask
+	// removeSSHConfig deletes the supervisor's ssh_config drop-in copy. It
+	// lives as long as the supervisor, so only a failed start removes it here.
+	removeSSHConfig := func() {}
+	started := false
+	defer func() {
+		if !started {
+			removeSSHConfig()
+		}
+	}()
 	grantedEnv := map[string]string{}
 	if !direct {
 		grantedEnv, err = resolveEnvironment(r.config.Environment)
@@ -175,6 +184,9 @@ func (r *Runner) startSessionSupervisor(cwd string, direct bool, tmpDir string) 
 		if !r.config.AllowDocker {
 			args = removeBind(args, "/run")
 		}
+		var sshConfigArgs []string
+		sshConfigArgs, removeSSHConfig = copySSHConfigDropIns()
+		args = append(args, sshConfigArgs...)
 		masks, err = discoverFilesystemMasks(r.config, cwd)
 		if err != nil {
 			if proxy != nil {
@@ -240,10 +252,12 @@ func (r *Runner) startSessionSupervisor(cwd string, direct bool, tmpDir string) 
 		}
 		return nil, err
 	}
+	started = true
 	cleanup := func() {
 		if proxy != nil {
 			proxy.Close()
 		}
+		removeSSHConfig()
 	}
 	var recorder *sandboxNetworkController
 	if proxy != nil {
