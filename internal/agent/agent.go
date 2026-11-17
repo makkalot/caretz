@@ -64,7 +64,7 @@ type AgentSession struct {
 	activeChildrenMu        sync.Mutex
 	activeChildren          map[string]struct{} // open child sessions, by channel ID
 	onClose                 func()
-	asyncTurnRunner         atomic.Pointer[AsyncTurnRunner]
+	asyncTurnRunner         atomic.Pointer[asyncTurnFrontend]
 	integrationMu           sync.Mutex
 	integrations            map[string]sessiontools.Integration
 	integrationFactories    []sessiontools.Factory

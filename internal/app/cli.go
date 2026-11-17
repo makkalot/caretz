@@ -31,6 +31,7 @@ type acpCommandOptions struct {
 	baseFlagValues
 	Incognito     bool           `flag:"incognito" help:"Keep the agent session in memory instead of writing session files" group:"Session state"`
 	AllowedModels stringListFlag `flag:"allowed-model" help:"Restrict ACP to these configured provider/model references. Can be specified multiple times." group:"Model and context"`
+	Peer          string         `flag:"peer" help:"Run the named peer bot and serve only its session, which clients open with session/load" group:"Session state"`
 }
 
 type cliEnvironment struct {
@@ -69,6 +70,9 @@ func newCaretzCLICommand(env cliEnvironment) *clicmd.Command {
 				logger.SetVerbosity(2)
 			} else if baseFlags.Verbose {
 				logger.SetVerbosity(1)
+			}
+			if name := strings.TrimSpace(values.Peer); name != "" {
+				return runPeerACP(ctx, name, baseFlags, logger, os.Stdin, env.stdout, env.stderr, env.options, values.AllowedModels)
 			}
 			rt, code := buildRuntimeFromFlags(ctx, baseFlags, logger, env.stderr, env.options)
 			if code != 0 {

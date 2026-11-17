@@ -91,7 +91,12 @@ type Options struct {
 	// MessageRenderers draw user and tool messages the built-in TUI would
 	// otherwise render itself.
 	MessageRenderers []output.MessageRenderer
-	BuildInfo        BuildInfo
+	// HiddenPaths are absolute paths, added to the built-in protected paths,
+	// that the agent's file tools and sandboxed commands may not read or
+	// write. An embedder hosting several workspaces lists the other
+	// workspaces' config roots here.
+	HiddenPaths []string
+	BuildInfo   BuildInfo
 }
 
 type BuildInfo struct {
@@ -263,6 +268,11 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 		output.Errorf(stderr, "--system-prompt and --system-prompt-file cannot be combined")
 		return nil, 2
 	}
+	extraHiddenPaths, err := resolveExtraHiddenPaths(opts.HiddenPaths)
+	if err != nil {
+		output.Errorf(stderr, "%v", err)
+		return nil, 2
+	}
 	configRoot, err := resolveConfigRoot(cwd, baseFlags.ConfigRoot, baseFlags.ConfigRootFlags, os.Getenv)
 	if err != nil {
 		output.Errorf(stderr, "%v", err)
@@ -419,6 +429,7 @@ func buildRuntimeFromFlags(ctx context.Context, baseFlags baseFlagValues, logger
 	sandboxSettings.ReadOnlyPaths = appendUniqueStrings(sandboxSettings.ReadOnlyPaths, agentsDirs...)
 	// The peer run directory holds the message signing key and spools.
 	sandboxSettings.HiddenPaths = []string{homeConfigPath, projectConfigPath, config.CredentialsPath(homeConfigPath), peers.RunRoot(configRoot)}
+	sandboxSettings.HiddenPaths = appendUniqueStrings(sandboxSettings.HiddenPaths, extraHiddenPaths...)
 	disableTasks := resolveDisableTasks(fileConfig, baseFlags.TaskMode)
 	guardFlags := loopGuardFlags{Mode: baseFlags.LoopGuard, Model: baseFlags.LoopGuardModel, Reasoning: baseFlags.LoopGuardReasoning}
 	if baseFlags.Changed["loop-guard-check-every"] {

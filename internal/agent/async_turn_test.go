@@ -108,6 +108,27 @@ func TestAsyncTurnRunnerContextCancelsTurn(t *testing.T) {
 	}
 }
 
+func TestUnattendedAsyncTurnRunnerDeniesWithoutAsking(t *testing.T) {
+	session := newOutsideReadSession(t)
+	ran := make(chan struct{}, 1)
+	session.SetUnattendedAsyncTurnRunner(func(ctx context.Context, turn func(context.Context, <-chan struct{}) error) error {
+		ran <- struct{}{}
+		return turn(context.Background(), nil)
+	})
+	completed := publishForegroundAsyncRun(t, session)
+	if result := waitAsyncResult(t, completed); result.Status != "succeeded" || result.Response != "done" {
+		t.Fatalf("result = %+v", result)
+	}
+	if pending := session.PendingPermissions(); len(pending) != 0 {
+		t.Fatalf("unattended run asked for permission: %+v", pending)
+	}
+	select {
+	case <-ran:
+	default:
+		t.Fatal("runner was not used")
+	}
+}
+
 func TestAsyncTurnWithoutRunnerDeniesWithoutAsking(t *testing.T) {
 	session := newOutsideReadSession(t)
 	completed := publishForegroundAsyncRun(t, session)

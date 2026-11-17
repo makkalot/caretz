@@ -943,6 +943,30 @@ func hostGitHubAuthToken() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// resolveExtraHiddenPaths validates embedder-supplied hidden paths. Each must
+// be absolute. When a path already exists under a symlinked alias, its
+// resolved form is hidden too, so the file tools' prefix checks match either
+// spelling. Paths that do not exist yet are kept: the sandbox hides them once
+// they appear.
+func resolveExtraHiddenPaths(paths []string) ([]string, error) {
+	var resolved []string
+	for _, path := range paths {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			return nil, fmt.Errorf("hidden path must not be empty")
+		}
+		if !filepath.IsAbs(trimmed) {
+			return nil, fmt.Errorf("hidden path %q must be absolute", path)
+		}
+		clean := filepath.Clean(trimmed)
+		resolved = appendUniqueStrings(resolved, clean)
+		if real, err := filepath.EvalSymlinks(clean); err == nil {
+			resolved = appendUniqueStrings(resolved, real)
+		}
+	}
+	return resolved, nil
+}
+
 func appendUniqueStrings(base []string, additions ...string) []string {
 	result := append([]string(nil), base...)
 	seen := make(map[string]bool, len(result)+len(additions))

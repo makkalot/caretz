@@ -74,6 +74,69 @@ func TestRuntimeSessionStorageAccess(t *testing.T) {
 	}
 }
 
+func TestBuildRuntimeOptionHiddenPaths(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CARETZ_CONFIG_ROOT", "")
+	ownRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(otherRoot, "sessions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherRoot, "sessions", "history"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "other")
+	if err := os.Symlink(otherRoot, alias); err != nil {
+		t.Fatal(err)
+	}
+	notYet := filepath.Join(t.TempDir(), "created-later")
+	args := []string{"--config-root", ownRoot, "--base-url", "http://localhost:8000/v1", "--model", "test-model"}
+
+	var stderr strings.Builder
+	rt, code := BuildRuntimeWithOptions(t.Context(), args, &stderr, Options{HiddenPaths: []string{alias + "/", notYet}})
+	if code != 0 {
+		t.Fatalf("runtime: %d %s", code, stderr.String())
+	}
+	for _, want := range []string{alias, otherRoot, notYet, filepath.Join(ownRoot, "run")} {
+		if !slices.Contains(rt.ToolRegistry.HiddenPaths, want) {
+			t.Errorf("tool registry does not hide %s: %v", want, rt.ToolRegistry.HiddenPaths)
+		}
+		if !slices.Contains(rt.SandboxSettings.HiddenPaths, want) {
+			t.Errorf("sandbox settings do not hide %s: %v", want, rt.SandboxSettings.HiddenPaths)
+		}
+	}
+	readDenied := func(registry *tools.Registry, path string) bool {
+		_, err := registry.HandleToolCall(llm.ToolCall{ID: "r", Name: "Read", Arguments: fmt.Sprintf(`{"file_path":%q}`, path)})
+		return err != nil && strings.Contains(err.Error(), "protected path")
+	}
+	for _, path := range []string{filepath.Join(alias, "sessions", "history"), filepath.Join(otherRoot, "sessions", "history")} {
+		if !readDenied(rt.ToolRegistry, path) {
+			t.Errorf("Read can reach %s", path)
+		}
+	}
+	server := &acpServer{rt: rt}
+	for _, mode := range []string{acpModeBuild, acpModePlan} {
+		if !readDenied(server.acpToolRegistryForMode(rt.CWD, mode), filepath.Join(otherRoot, "sessions", "history")) {
+			t.Errorf("ACP %s mode can read the other workspace's sessions", mode)
+		}
+	}
+
+	for _, bad := range []string{"relative/root", " "} {
+		stderr.Reset()
+		if rt, code := BuildRuntimeWithOptions(t.Context(), args, &stderr, Options{HiddenPaths: []string{bad}}); rt != nil || code != 2 {
+			t.Errorf("hidden path %q: code=%d, want 2", bad, code)
+		} else if !strings.Contains(stderr.String(), "hidden path") {
+			t.Errorf("hidden path %q: stderr=%q", bad, stderr.String())
+		}
+	}
+}
+
 func TestBuildRuntimeCustomSystemPromptAndToolFlags(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

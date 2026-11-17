@@ -116,14 +116,32 @@ func finishOwnedWork(ctx context.Context) {
 // without calling turn means the turn never ran.
 type AsyncTurnRunner func(ctx context.Context, turn func(ctx context.Context, stop <-chan struct{}) error) error
 
+// asyncTurnFrontend is an installed AsyncTurnRunner. ask reports whether
+// someone can answer permission prompts during the turns it runs.
+type asyncTurnFrontend struct {
+	run AsyncTurnRunner
+	ask bool
+}
+
 // SetAsyncTurnRunner installs runner for later background turns; nil restores
 // headless execution, where permission requests are denied immediately.
 func (a *AgentSession) SetAsyncTurnRunner(runner AsyncTurnRunner) {
+	a.setAsyncTurnFrontend(runner, true)
+}
+
+// SetUnattendedAsyncTurnRunner installs runner for a frontend that frames and
+// can stop background turns but cannot answer permission prompts, so those
+// turns still deny permission requests immediately.
+func (a *AgentSession) SetUnattendedAsyncTurnRunner(runner AsyncTurnRunner) {
+	a.setAsyncTurnFrontend(runner, false)
+}
+
+func (a *AgentSession) setAsyncTurnFrontend(runner AsyncTurnRunner, ask bool) {
 	if runner == nil {
 		a.asyncTurnRunner.Store(nil)
 		return
 	}
-	a.asyncTurnRunner.Store(&runner)
+	a.asyncTurnRunner.Store(&asyncTurnFrontend{run: runner, ask: ask})
 }
 
 func (a *AgentSession) PublishAsyncEvent(ctx context.Context, event *types.Event) error {
@@ -366,16 +384,19 @@ func (a *AgentSession) withExecutionContext(ctx context.Context, run func() erro
 // lock. With a frontend's AsyncTurnRunner installed, the frontend runs it, so
 // the turn gets the same ESC, Ctrl-C, and permission prompts as a typed one.
 func (a *AgentSession) runAsyncTurn(ctx context.Context, turn func(ctx context.Context, stop <-chan struct{}) error) error {
-	runner := a.asyncTurnRunner.Load()
-	if runner == nil {
+	frontend := a.asyncTurnRunner.Load()
+	if frontend == nil {
 		return a.withExecutionContext(ctx, func() error { return turn(ctx, nil) })
 	}
-	return (*runner)(ctx, func(frontendCtx context.Context, stop <-chan struct{}) error {
+	return frontend.run(ctx, func(frontendCtx context.Context, stop <-chan struct{}) error {
 		// Either the run's own deadline or the frontend (Ctrl-C) ends it.
 		turnCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		defer context.AfterFunc(frontendCtx, cancel)()
 		return a.withExecutionContext(turnCtx, func() error {
+			if !frontend.ask {
+				return turn(turnCtx, stop)
+			}
 			// Someone is at the terminal to answer, so ask instead of denying.
 			return turn(tools.WithPermissionRequester(turnCtx, a.requestPermission), stop)
 		})

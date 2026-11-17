@@ -168,6 +168,23 @@ Check which bots are running from any session:
 /peers
 ```
 
+### Run a bot without a terminal
+
+On a server, or from an application that speaks ACP, run the bot as an ACP
+server instead of a terminal UI:
+
+```sh
+caretz acp --peer reviewer
+```
+
+The bot starts working through its inbox right away, whether or not a client
+is connected. A client sees one session, named after the bot; `session/load`
+attaches to it and replays its history, and the client can then talk to the
+bot directly. `session/close` detaches the client and leaves the bot running.
+The same one-instance rule applies, so this exits if `caretz peer reviewer` is
+already running. Nobody can answer an approval prompt, so anything that needs
+approval is refused.
+
 ## Send it work
 
 Ask your main session to involve the bot in plain language:
@@ -238,8 +255,11 @@ program can already edit your config, sessions, and skills.
 
 ## Current boundaries
 
-- Messaging works in interactive sessions and bot processes. One-shot
-  `caretz -p` runs and ACP sessions can't send or receive messages yet.
+- Messaging works in interactive sessions, ACP sessions, and bot processes.
+  One-shot `caretz -p` runs can't send or receive messages yet.
+- In an ACP session, a turn started by a bot's reply runs without asking:
+  anything that needs approval is refused. See
+  [turns you didn't start](acp.md#turns-you-didnt-start).
 - Bots and the main session share the working tree, and nothing stops two of
   them from editing the same file at once. Use `workspace:` for bots that write.
 - If a bot's turn started from a message needs your approval and nobody answers

@@ -14,6 +14,7 @@ import (
 	"github.com/makkalot/caretz/internal/config"
 	"github.com/makkalot/caretz/internal/herdr"
 	"github.com/makkalot/caretz/internal/log"
+	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/internal/peers"
 	"github.com/makkalot/caretz/internal/sessiontools"
 	"github.com/makkalot/caretz/internal/slashcmd"
@@ -38,6 +39,32 @@ type peerLaunch struct {
 	workDir string
 	// flags are the command-line flags the bot was started with.
 	flags []string
+	// explicitModel is set when --model or --reasoning was given, which wins
+	// over the definition's model and reasoning.
+	explicitModel bool
+}
+
+// modelSettings applies the definition's model and reasoning, which win over
+// a saved /model choice unless --model or --reasoning was given.
+func (l *peerLaunch) modelSettings(fileConfig config.Config, settings runtimeSettings) (runtimeSettings, error) {
+	if l.explicitModel {
+		return settings, nil
+	}
+	reasoning := strings.TrimSpace(l.def.Reasoning)
+	if ref := strings.TrimSpace(l.def.Model); ref != "" {
+		if reasoning == "" {
+			reasoning = settings.ReasoningEffort
+		}
+		restored, err := settingsForSessionRuntime(fileConfig, settings, sessionRuntimeState{ModelRef: ref, ReasoningEffort: reasoning})
+		if err != nil {
+			return settings, fmt.Errorf("bot %s: %w", l.def.Name, err)
+		}
+		return restored, nil
+	}
+	if reasoning != "" {
+		settings.ReasoningEffort = reasoning
+	}
+	return settings, nil
 }
 
 // peerDefinitions lists the configured peer bots the active profile allows.
@@ -349,14 +376,7 @@ func rootPeerOptions(rt *Runtime, logger *log.Logger, stderr io.Writer, start *b
 	}
 	options := tuiPeerOptions{
 		Integration: func(adapter string) sessiontools.Factory {
-			return peers.NewFactory(peers.Config{
-				RunDir:       runDir,
-				Endpoint:     func(id string) string { return peers.SessionEndpoint(adapter, id) },
-				Label:        peers.RootLabel,
-				Peers:        listPeers,
-				LockEndpoint: true,
-				Logf:         logger.Info,
-			})
+			return rootPeerFactory(runDir, adapter, listPeers, logger.Info)
 		},
 	}
 	if start != nil {
@@ -365,6 +385,76 @@ func rootPeerOptions(rt *Runtime, logger *log.Logger, stderr io.Writer, start *b
 		}
 	}
 	return options
+}
+
+// runPeerACP serves the peer bot name over ACP on stdin and stdout. The bot
+// runs and answers its messages from start to exit; clients attach to its
+// session with session/load.
+func runPeerACP(ctx context.Context, name string, baseFlags baseFlagValues, logger *log.Logger, stdin io.Reader, stdout, stderr io.Writer, opts Options, allowedModels []string) int {
+	if baseFlags.Incognito {
+		output.Errorf(stderr, "peer bots keep durable sessions and cannot run incognito")
+		return 2
+	}
+	if err := applyPeerProfile(&baseFlags, name); err != nil {
+		output.Errorf(stderr, "%v", err)
+		return 1
+	}
+	rt, code := buildRuntimeFromFlags(ctx, baseFlags, logger, stderr, opts)
+	if code != 0 || rt == nil {
+		return code
+	}
+	if rt.Incognito {
+		output.Errorf(stderr, "peer bots keep durable sessions and cannot run incognito")
+		return 2
+	}
+	launch, err := preparePeerLaunch(rt, name)
+	if err != nil {
+		output.Errorf(stderr, "%v", err)
+		return 1
+	}
+	defer func() { _ = launch.lock.Release() }()
+	launch.explicitModel = baseFlags.Changed["model"] || baseFlags.Changed["reasoning"]
+	rt.printModelNotices(stderr)
+	server, err := NewACPServer(rt, allowedModels)
+	if err != nil {
+		output.Errorf(stderr, "%v", err)
+		return 1
+	}
+	acp := server.(*acpServer)
+	acp.peer = launch
+	if err := acp.ServeACP(ctx, stdin, stdout); err != nil {
+		output.Errorf(stderr, "%v", err)
+		return 1
+	}
+	return 0
+}
+
+// rootPeerFactory is the messaging integration of a root session of adapter:
+// it may message every bot and receives their replies on its own endpoint.
+func rootPeerFactory(runDir *peers.RunDir, adapter string, listPeers func() ([]subagents.Definition, error), logf func(string, ...any)) sessiontools.Factory {
+	return peers.NewFactory(peers.Config{
+		RunDir:       runDir,
+		Endpoint:     func(id string) string { return peers.SessionEndpoint(adapter, id) },
+		Label:        peers.RootLabel,
+		Peers:        listPeers,
+		LockEndpoint: true,
+		Logf:         logf,
+	})
+}
+
+// acpPeerIntegration returns the messaging integration for an ACP session
+// working in cwd, or nil when that workspace defines no peer bots.
+func acpPeerIntegration(rt *Runtime, cwd string, agentsDirs []string) (sessiontools.Factory, error) {
+	listPeers := peerDefinitions(agentsDirs, rt.Profile.Agents)
+	defs, err := listPeers()
+	if err != nil || len(defs) == 0 {
+		return nil, err
+	}
+	runDir, err := peers.OpenRunDir(rt.ConfigRoot, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return rootPeerFactory(runDir, acpAdapterType, listPeers, rt.Logger.Info), nil
 }
 
 // startPeerBots opens the configured tabs with a pane per offline bot. Only
@@ -416,6 +506,52 @@ func startPeerBots(rt *Runtime, start *botStart, logger *log.Logger) {
 	}()
 }
 
+// PeerBotStatus is one configured peer bot of a workspace and its state.
+type PeerBotStatus struct {
+	Name        string
+	Description string
+	// Running reports whether a process runs the bot, and PID which one.
+	Running bool
+	PID     int
+	// Queued counts messages waiting in the bot's inbox.
+	Queued int
+}
+
+// peerStatuses reports the liveness and inbox depth of defs in workspace.
+func peerStatuses(configRoot, workspace string, defs []subagents.Definition) ([]PeerBotStatus, error) {
+	if len(defs) == 0 {
+		return nil, nil
+	}
+	runDir, err := peers.OpenRunDir(configRoot, workspace)
+	if err != nil {
+		return nil, err
+	}
+	statuses := make([]PeerBotStatus, 0, len(defs))
+	for _, def := range defs {
+		endpoint := peers.BotEndpoint(def.Name)
+		pid, running := runDir.Live(endpoint)
+		statuses = append(statuses, PeerBotStatus{
+			Name:        def.Name,
+			Description: def.Description,
+			Running:     running,
+			PID:         pid,
+			Queued:      runDir.PendingCount(endpoint),
+		})
+	}
+	slices.SortFunc(statuses, func(a, b PeerBotStatus) int { return strings.Compare(a.Name, b.Name) })
+	return statuses, nil
+}
+
+// PeerBots lists the peer bots the runtime's workspace defines and its
+// profile allows, sorted by name.
+func (rt *Runtime) PeerBots() ([]PeerBotStatus, error) {
+	defs, err := peerDefinitions(rt.AgentsDirs, rt.Profile.Agents)()
+	if err != nil {
+		return nil, err
+	}
+	return peerStatuses(rt.ConfigRoot, rt.CWD, defs)
+}
+
 // peersCommand lists configured bots with their liveness and inbox depth.
 type peersCommand struct {
 	configRoot, workspace string
@@ -437,25 +573,24 @@ func (c peersCommand) Run(_ context.Context, _ *agent.AgentSession, _ string) (s
 	if len(defs) == 0 {
 		return slashcmd.Result{Message: "No peer bots are configured. Add mode: peer to an agent in .caretz/agents."}, nil
 	}
-	runDir, err := peers.OpenRunDir(c.configRoot, c.workspace)
+	statuses, err := peerStatuses(c.configRoot, c.workspace, defs)
 	if err != nil {
 		return slashcmd.Result{}, err
 	}
 	var b strings.Builder
-	for _, def := range defs {
-		endpoint := peers.BotEndpoint(def.Name)
-		status := "offline (start with: caretz peer " + def.Name + ")"
-		if def.Name == c.self {
+	for _, bot := range statuses {
+		status := "offline (start with: caretz peer " + bot.Name + ")"
+		if bot.Name == c.self {
 			status = fmt.Sprintf("this session (pid %d)", os.Getpid())
-		} else if pid, live := runDir.Live(endpoint); live {
-			status = fmt.Sprintf("running (pid %d)", pid)
+		} else if bot.Running {
+			status = fmt.Sprintf("running (pid %d)", bot.PID)
 		}
-		fmt.Fprintf(&b, "%s: %s", def.Name, status)
-		if pending := runDir.PendingCount(endpoint); pending > 0 {
-			fmt.Fprintf(&b, ", %d queued", pending)
+		fmt.Fprintf(&b, "%s: %s", bot.Name, status)
+		if bot.Queued > 0 {
+			fmt.Fprintf(&b, ", %d queued", bot.Queued)
 		}
-		if def.Description != "" {
-			fmt.Fprintf(&b, "\n  %s", def.Description)
+		if bot.Description != "" {
+			fmt.Fprintf(&b, "\n  %s", bot.Description)
 		}
 		b.WriteString("\n")
 	}

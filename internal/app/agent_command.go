@@ -146,6 +146,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 			return 1
 		}
 		launch.flags = parsed.FlagArgs(sessionSelectionFlags...)
+		launch.explicitModel = baseFlags.Changed["model"] || baseFlags.Changed["reasoning"]
 		defer func() { _ = launch.lock.Release() }()
 	}
 	var botStarter *botStart
@@ -189,21 +190,10 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		}
 	}
 
-	if launch != nil && !baseFlags.Changed["model"] && !baseFlags.Changed["reasoning"] {
-		// The definition's model and reasoning win over a saved /model choice.
-		if ref := strings.TrimSpace(launch.def.Model); ref != "" {
-			reasoning := strings.TrimSpace(launch.def.Reasoning)
-			if reasoning == "" {
-				reasoning = runtimeConfig.ReasoningEffort
-			}
-			restored, err := settingsForSessionRuntime(fileConfig, runtimeConfig, sessionRuntimeState{ModelRef: ref, ReasoningEffort: reasoning})
-			if err != nil {
-				output.Errorf(stderr, "bot %s: %v", peerName, err)
-				return 1
-			}
-			runtimeConfig = restored
-		} else if reasoning := strings.TrimSpace(launch.def.Reasoning); reasoning != "" {
-			runtimeConfig.ReasoningEffort = reasoning
+	if launch != nil {
+		if runtimeConfig, err = launch.modelSettings(fileConfig, runtimeConfig); err != nil {
+			output.Errorf(stderr, "%v", err)
+			return 1
 		}
 		rt.Settings = runtimeConfig
 	}

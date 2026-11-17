@@ -43,6 +43,9 @@ the command is always `caretz acp`.
   prompt.
 - **Saved sessions.** Threads are stored under `.caretz/sessions/acp/` and can
   be listed and reopened from the editor.
+- **[Peer bots](peers.md).** In a workspace that defines bots, the agent can
+  hand them work with `SendMessage`. A bot's reply shows up in the thread as
+  a new message and the agent answers it, even when you haven't sent anything.
 - **The same sandbox.** Commands run sandboxed exactly as in the terminal.
   Approving a command to [run outside the sandbox](sandboxing/escalation.md)
   works too, but without a terminal `sudo` can't ask for a password.
@@ -84,6 +87,24 @@ start in a directory no [model rule](config/model-rules.md) covers, caretz
 prints a warning and continues, and switching to a model a rule blocks is
 refused. Write `modelRules` for the projects you open in the editor, or send
 `/allow-model provider/model` from the editor's prompt to allow one there.
+
+## Turns You Didn't Start
+
+A bot's reply, a schedule, or a finished background job can start a turn while
+you're idle. Its message and the agent's answer stream into the thread like a
+normal turn. Because no `session/prompt` response ends it, caretz brackets it
+with two extra updates that clients can use to show and clear a busy state:
+
+```text
+{"sessionUpdate":"caretz/turn_started","turnId":"…","source":"peer"}
+{"sessionUpdate":"caretz/turn_ended","turnId":"…","source":"peer","stopReason":"end_turn"}
+```
+
+`stopReason` is `end_turn`, `cancelled`, or `error` (with an `error` field).
+Such a turn waits for any running prompt, and a prompt sent during one waits
+for it. When no prompt is running, the editor's stop action cancels it.
+Nobody can approve anything during it, so a command that needs approval is
+refused.
 
 ## When It Doesn't Work
 

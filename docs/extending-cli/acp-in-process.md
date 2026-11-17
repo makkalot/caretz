@@ -81,3 +81,33 @@ replay journals, or automatic restart. Those policies belong to the embedding
 application. If `AllowedModels` is non-empty, the runtime's initial model must
 appear in it; model changes through ACP, slash commands, and subagents remain
 restricted to the same list.
+
+## Keep workspaces apart
+
+Each runtime protects its own config root, but not the config roots of other
+workspaces in the same process. Give every workspace its own `--config-root`
+and list the others in `cli.Options.HiddenPaths`, so a workspace's tools and
+sandboxed commands cannot read or write another workspace's sessions, config,
+or peer messages:
+
+```text
+cli.Options{HiddenPaths: []string{"/srv/caretz/blog", "/srv/caretz/docs"}}
+```
+
+Paths must be absolute. A path that doesn't exist yet is hidden once it
+appears.
+
+## Run a workspace's bots
+
+`Runtime.PeerBots()` lists the [peer bots](../peers.md) a workspace defines,
+with whether each is running and how many messages wait for it. To run one,
+start a child process that serves it over ACP and connect its stdin and
+stdout to your transport:
+
+```text
+caretz acp --peer reviewer --workspace /srv/project --config-root /srv/caretz/project
+```
+
+An embedder that registers its own tools re-runs its own binary and calls
+`cli.Run` with the same `acp --peer` arguments, so the bot keeps those tools.
+The child serves only the bot's session; open it with `session/load`.
