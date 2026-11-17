@@ -1008,7 +1008,7 @@ func (r *Registry) ToolDefinitions() []llm.ToolDefinition {
 			properties, _ := def.Parameters["properties"].(map[string]any)
 			properties["background"] = map[string]any{
 				"type":        "boolean",
-				"description": "Run the command in the background for this live session. Cannot be combined with timeout_seconds.",
+				"description": "Run the command in the background for this live session. Cannot be combined with timeout_seconds. When the job exits you receive a message with its exit status and the end of its log, so do not poll or sleep waiting for it; end your turn if you have nothing else to do.",
 			}
 		}
 		filtered = append(filtered, def)

@@ -59,6 +59,7 @@ type AgentSession struct {
 	reportMu                sync.Mutex
 	pendingReports          []*subagentReport
 	reportDraining          bool
+	reportsIdle             chan struct{} // closed once queued reports are delivered; nil when none are
 	activeChildrenMu        sync.Mutex
 	activeChildren          map[string]struct{} // open child sessions, by channel ID
 	onClose                 func()
@@ -528,6 +529,11 @@ func (a *AgentSession) processUserEventUntilStop(ctx context.Context, e *types.E
 		parentScope.Register(func() (string, error) { notes, err := scope.Stop(); return strings.Join(notes, "\n"), err })
 	}
 	ctx = turnscope.With(ctx, scope)
+	// A subagent running inside its parent's turn keeps the parent's
+	// notifier: the parent outlives the child and owns the shared shell.
+	if !tools.HasBackgroundJobNotifier(ctx) {
+		ctx = tools.WithBackgroundJobNotifier(ctx, a.reportBackgroundJob)
+	}
 	userPersisted := inContext && !retryingInterruptedTurn
 	defer func() {
 		if returnErr == nil {

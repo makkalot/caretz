@@ -516,15 +516,7 @@ func (a *AgentSession) reportBackgroundRun(ctx context.Context, run *asyncChild,
 	// Stopping the launching turn waits for this run's work, and the report
 	// needs the lock that turn still holds.
 	finishOwnedWork(ctx)
-	report := &subagentReport{childID: run.child.ChannelID(), text: text, delivered: make(chan struct{})}
-	a.reportMu.Lock()
-	a.pendingReports = append(a.pendingReports, report)
-	if !a.reportDraining {
-		a.reportDraining = true
-		a.asyncWG.Add(1)
-		go a.drainSubagentReports()
-	}
-	a.reportMu.Unlock()
+	report := a.queueReport(run.child.ChannelID(), text)
 	if run.releaseSlot != nil {
 		run.releaseSlot()
 	}
@@ -532,6 +524,55 @@ func (a *AgentSession) reportBackgroundRun(ctx context.Context, run *asyncChild,
 	case <-report.delivered:
 	case <-a.lifecycleCtx.Done():
 	}
+}
+
+// queueReport adds text to the next report turn, starting one if none is
+// pending. Reports queued together share one turn.
+func (a *AgentSession) queueReport(source, text string) *subagentReport {
+	report := &subagentReport{childID: source, text: text, delivered: make(chan struct{})}
+	a.reportMu.Lock()
+	defer a.reportMu.Unlock()
+	if a.lifecycleCtx == nil || a.lifecycleCtx.Err() != nil {
+		// A closing session runs no more turns.
+		close(report.delivered)
+		return report
+	}
+	a.pendingReports = append(a.pendingReports, report)
+	if a.reportsIdle == nil {
+		a.reportsIdle = make(chan struct{})
+	}
+	if !a.reportDraining {
+		a.reportDraining = true
+		a.asyncWG.Add(1)
+		go a.drainSubagentReports()
+	}
+	return report
+}
+
+// reportBackgroundJob gives the session a turn to learn that a background
+// Bash job ended, so the model need not poll for it. It is called from the
+// sandbox session's reader and must not block.
+func (a *AgentSession) reportBackgroundJob(exit sandbox.BackgroundExit) {
+	a.queueReport(fmt.Sprintf("job-%d", exit.PID), backgroundJobReport(exit))
+}
+
+func backgroundJobReport(exit sandbox.BackgroundExit) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Background command finished.\n\nCommand:\n%s\n\nPID: %d\n", exit.Command, exit.PID)
+	if exit.Signal != "" {
+		fmt.Fprintf(&b, "Killed by signal: %s\n", exit.Signal)
+	} else {
+		fmt.Fprintf(&b, "Exit code: %d\n", exit.ExitCode)
+	}
+	if exit.LogPath != "" {
+		fmt.Fprintf(&b, "Log: %s\n", exit.LogPath)
+	}
+	tail := strings.TrimRight(exit.LogTail, "\n")
+	if strings.TrimSpace(tail) == "" {
+		tail = "(empty)"
+	}
+	fmt.Fprintf(&b, "\nEnd of output:\n%s\n\nIf you stopped this job yourself, no action is needed.", tail)
+	return b.String()
 }
 
 // drainSubagentReports runs report turns until none are queued. Runs that end
@@ -549,10 +590,32 @@ func (a *AgentSession) drainSubagentReports() {
 		a.reportMu.Lock()
 		if err != nil || len(a.pendingReports) == 0 {
 			a.reportDraining = false
+			if a.reportsIdle != nil {
+				close(a.reportsIdle)
+				a.reportsIdle = nil
+			}
 			a.reportMu.Unlock()
 			return
 		}
 		a.reportMu.Unlock()
+	}
+}
+
+// waitForReports blocks until no report is queued or being delivered.
+func (a *AgentSession) waitForReports(ctx context.Context) error {
+	a.reportMu.Lock()
+	idle := a.reportsIdle
+	a.reportMu.Unlock()
+	if idle == nil {
+		return nil
+	}
+	select {
+	case <-idle:
+		return nil
+	case <-a.lifecycleCtx.Done():
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -575,9 +638,9 @@ func (a *AgentSession) runSubagentReportTurn() error {
 	for i, report := range reports {
 		texts[i] = report.text
 	}
-	closing := "Report the result to the user concisely."
+	closing := "React if this needs action; otherwise report the result to the user concisely."
 	if len(reports) > 1 {
-		closing = "Report the results to the user concisely."
+		closing = "React if these need action; otherwise report the results to the user concisely."
 	}
 	turnCtx, cancel := context.WithTimeout(a.lifecycleCtx, subagentReportTimeout)
 	defer cancel()
@@ -597,17 +660,28 @@ func (a *AgentSession) BackgroundSubagentsRunning() int {
 // WaitForBackgroundSubagents blocks until every background run has ended and
 // been reported, including runs a report turn starts. A one-shot process calls
 // it before exiting, which would otherwise kill them.
+//
+// It also waits for queued reports, such as a background Bash job that has
+// already exited, but not for jobs still running: a dev server never ends.
 func (a *AgentSession) WaitForBackgroundSubagents(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		a.backgroundWG.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	for {
+		done := make(chan struct{})
+		go func() {
+			a.backgroundWG.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		if err := a.waitForReports(ctx); err != nil {
+			return err
+		}
+		// A report turn may have started another run.
+		if a.BackgroundSubagentsRunning() == 0 {
+			return nil
+		}
 	}
 }
 

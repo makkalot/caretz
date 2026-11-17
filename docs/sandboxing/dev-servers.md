@@ -22,7 +22,26 @@ Log: $TMPDIR/caretz/processes/12345.log
 Stop: kill -TERM -- -12345
 ```
 
+You don't have to keep an eye on it. When a background job exits, for example
+a long build finishing or a server crashing, its exit status and the end of
+its log arrive as a new message, and the agent reacts or reports it to you.
+So you can say "build in the background and run the tests when it's done"
+without the agent polling for it.
+
 Use `--session-exec=false` to run each command on its own instead.
+
+## When Exits Are Reported
+
+Caretz reports a job that exits by itself, and a job a command kills, such as
+the agent running the `Stop:` line. It doesn't report a job it stops itself:
+when you press Esc on the turn that started it, run `/clear`, or close the
+session, or when the sandbox restarts to apply a new permission. Jobs that end
+together share one report, and a report waits for the turn in progress to
+finish. The message carries up to the last 4KB of the log; the full log stays
+at the `Log:` path.
+
+In one-shot mode (`-p`), Caretz delivers reports for jobs that already ended
+before it exits, but doesn't wait for jobs still running.
 
 ## What Commands Share
 

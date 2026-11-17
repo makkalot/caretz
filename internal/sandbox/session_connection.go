@@ -17,7 +17,10 @@ type sessionConnection struct {
 	in      io.Writer
 	next    uint64
 	pending map[uint64]chan sessionReply
-	err     error
+	// watchers receive the "exited" frame of a background job, by the ID
+	// of the request that started it.
+	watchers map[uint64]func(sessionResponse)
+	err      error
 }
 
 type sessionReply struct {
@@ -26,7 +29,7 @@ type sessionReply struct {
 }
 
 func newSessionConnection(in io.Writer, out *bufio.Reader) *sessionConnection {
-	c := &sessionConnection{in: in, pending: make(map[uint64]chan sessionReply)}
+	c := &sessionConnection{in: in, pending: make(map[uint64]chan sessionReply), watchers: make(map[uint64]func(sessionResponse))}
 	go c.read(out)
 	return c
 }
@@ -42,8 +45,20 @@ func (c *sessionConnection) read(out *bufio.Reader) {
 				ch <- sessionReply{err: err}
 				delete(c.pending, id)
 			}
+			// A lost supervisor took its jobs with it; the next command
+			// reports that the supervisor was recreated.
+			clear(c.watchers)
 			c.mu.Unlock()
 			return
+		}
+		if resp.Type == "exited" {
+			watch := c.watchers[resp.ID]
+			delete(c.watchers, resp.ID)
+			c.mu.Unlock()
+			if watch != nil {
+				watch(resp)
+			}
+			continue
 		}
 		if ch := c.pending[resp.ID]; ch != nil {
 			ch <- sessionReply{resp: resp}
@@ -66,6 +81,22 @@ func (c *sessionConnection) prepare() (uint64, <-chan sessionReply, error) {
 }
 
 func (c *sessionConnection) abandon(id uint64) { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }
+
+// watch registers fn for the exit of the background job request id starts.
+// Register before writing the request, so a job that exits at once is seen.
+func (c *sessionConnection) watch(id uint64, fn func(sessionResponse)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err == nil {
+		c.watchers[id] = fn
+	}
+}
+
+// unwatch forgets the job request id started, so its exit is not reported.
+func (c *sessionConnection) unwatch(id uint64) { c.mu.Lock(); delete(c.watchers, id); c.mu.Unlock() }
+
+// unwatchAll forgets every job, before Caretz itself stops them.
+func (c *sessionConnection) unwatchAll() { c.mu.Lock(); clear(c.watchers); c.mu.Unlock() }
 func (c *sessionConnection) write(req sessionRequest) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()

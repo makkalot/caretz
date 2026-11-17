@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/makkalot/caretz/internal/turnscope"
 )
 
 func TestSessionFrameRejectsMalformedInput(t *testing.T) {
@@ -445,6 +447,82 @@ func TestDirectSessionForegroundCancellationKeepsBackground(t *testing.T) {
 	if err != nil || !strings.Contains(check, "alive") {
 		t.Fatalf("background lost: out=%q stderr=%q err=%v", check, stderr, err)
 	}
+}
+
+// exitWatcher collects background job exits for a test.
+type exitWatcher chan BackgroundExit
+
+func (w exitWatcher) notify(exit BackgroundExit) { w <- exit }
+
+func (w exitWatcher) next(t *testing.T) BackgroundExit {
+	t.Helper()
+	select {
+	case exit := <-w:
+		return exit
+	case <-time.After(10 * time.Second):
+		t.Fatal("background exit was not reported")
+		return BackgroundExit{}
+	}
+}
+
+func (w exitWatcher) none(t *testing.T, wait time.Duration) {
+	t.Helper()
+	select {
+	case exit := <-w:
+		t.Fatalf("unexpected background exit report: %+v", exit)
+	case <-time.After(wait):
+	}
+}
+
+func TestDirectSessionReportsBackgroundExit(t *testing.T) {
+	s := NewRunner(Config{}).NewSession(true)
+	t.Cleanup(func() { _ = s.Close() })
+	cwd := t.TempDir()
+	exits := make(exitWatcher, 4)
+	command := `echo building; echo done-marker; exit 3`
+	out, stderr, err := s.Run(context.Background(), cwd, command, RunOptions{Background: true, OnBackgroundExit: exits.notify})
+	if err != nil {
+		t.Fatalf("background: %v (%s)", err, stderr)
+	}
+	exit := exits.next(t)
+	if exit.ExitCode != 3 || exit.Signal != "" || exit.Command != command {
+		t.Fatalf("exit=%+v", exit)
+	}
+	if !strings.Contains(exit.LogTail, "building\ndone-marker") {
+		t.Fatalf("log tail=%q", exit.LogTail)
+	}
+	if !strings.Contains(out, exit.LogPath) || !strings.Contains(out, fmt.Sprintf("PID: %d", exit.PID)) {
+		t.Fatalf("exit %+v does not match start output %q", exit, out)
+	}
+
+	if _, _, err := s.Run(context.Background(), cwd, `kill -TERM $$; sleep 30`, RunOptions{Background: true, OnBackgroundExit: exits.notify}); err != nil {
+		t.Fatal(err)
+	}
+	if exit := exits.next(t); exit.ExitCode != -1 || exit.Signal == "" {
+		t.Fatalf("signal exit=%+v", exit)
+	}
+}
+
+func TestDirectSessionDoesNotReportJobsCaretzStops(t *testing.T) {
+	s := NewRunner(Config{}).NewSession(true)
+	cwd := t.TempDir()
+	exits := make(exitWatcher, 4)
+	scope := &turnscope.Scope{}
+	if _, _, err := s.Run(turnscope.With(context.Background(), scope), cwd, "sleep 60", RunOptions{Background: true, OnBackgroundExit: exits.notify}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scope.Stop(); err != nil {
+		t.Fatalf("stop turn: %v", err)
+	}
+	exits.none(t, 300*time.Millisecond)
+
+	if _, _, err := s.Run(context.Background(), cwd, "sleep 60", RunOptions{Background: true, OnBackgroundExit: exits.notify}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	exits.none(t, 300*time.Millisecond)
 }
 
 func TestDirectSessionCloseTerminatesProcessTree(t *testing.T) {

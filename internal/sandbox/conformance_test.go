@@ -1004,6 +1004,29 @@ func TestConformanceSessionStateAndClose(t *testing.T) {
 	}
 }
 
+func TestConformanceSessionReportsBackgroundExit(t *testing.T) {
+	requireConformance(t)
+	cwd := t.TempDir()
+	s := NewRunner(Config{}).NewSession(false)
+	t.Cleanup(func() { _ = s.Close() })
+	exits := make(exitWatcher, 2)
+	if _, stderr, err := s.Run(t.Context(), cwd, `echo sandboxed-job; exit 7`, RunOptions{Background: true, OnBackgroundExit: exits.notify}); err != nil {
+		t.Fatalf("background: %v (%s)", err, stderr)
+	}
+	exit := exits.next(t)
+	if exit.ExitCode != 7 || !strings.Contains(exit.LogTail, "sandboxed-job") {
+		t.Fatalf("exit=%+v", exit)
+	}
+	scope := &turnscope.Scope{}
+	if _, stderr, err := s.Run(turnscope.With(t.Context(), scope), cwd, "sleep 60", RunOptions{Background: true, OnBackgroundExit: exits.notify}); err != nil {
+		t.Fatalf("owned job: %v (%s)", err, stderr)
+	}
+	if _, err := scope.Stop(); err != nil {
+		t.Fatalf("stop turn: %v", err)
+	}
+	exits.none(t, 300*time.Millisecond)
+}
+
 func TestConformanceTurnCancellationPreservesEarlierJobs(t *testing.T) {
 	requireConformance(t)
 	cwd := t.TempDir()

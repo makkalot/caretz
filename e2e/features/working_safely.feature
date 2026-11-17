@@ -101,9 +101,32 @@ Feature: Working safely
       sleep 3; cat status.txt
       """
     And the assistant replies "The background job finished"
+    And the assistant replies "The job is done"
     When I ask caretz "start the job and check on it"
     Then caretz finishes successfully
     And what the assistant saw from the command contains "ready"
+
+  # Test: TestSandboxBackgroundJobReportsWhenItEnds (e2e/sandbox_test.go)
+  Scenario: caretz tells the assistant when a background job ends
+    The assistant does not have to poll: the exit status and the end of the log arrive as a new message.
+    Given the assistant starts in the background:
+      """
+      echo compiling; echo 'main.go:3: undefined: Foo' >&2; exit 2
+      """
+    And the assistant runs:
+      """
+      sleep 1; echo other work done
+      """
+    And the assistant replies "The build is running in the background"
+    And the assistant replies "The build failed: Foo is undefined in main.go"
+    When I ask caretz "build in the background while you do other work"
+    Then caretz finishes successfully
+    And caretz contacted the assistant 4 times
+    And caretz's answer contains "The build failed: Foo is undefined in main.go"
+    And the tool result for "build" in request 2 contains "You will get a message when it exits"
+    And the user message in the last request contains "Background command finished."
+    And the user message in the last request contains "Exit code: 2"
+    And the user message in the last request contains "main.go:3: undefined: Foo"
 
   # Test: TestSandboxPlanModeChangesNothing (e2e/sandbox_test.go)
   Scenario: in plan mode caretz looks but does not change anything

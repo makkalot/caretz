@@ -90,7 +90,7 @@ func TestRunsFinishingTogetherShareOneReportTurn(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("report turns = %d: %q", len(calls), calls)
 	}
-	for _, want := range []string{"first", "second", "third", "Report the results to the user concisely."} {
+	for _, want := range []string{"first", "second", "third", "otherwise report the results to the user concisely."} {
 		if !strings.Contains(calls[0], want) {
 			t.Fatalf("report lacks %q:\n%s", want, calls[0])
 		}
