@@ -112,7 +112,7 @@ func TestModelsCommandSwitchesModel(t *testing.T) {
 	if result.ActiveModel != "qwen-code" {
 		t.Fatalf("ActiveModel = %q, want qwen-code", result.ActiveModel)
 	}
-	if result.Message != "model switched: local/qwen → qwen-code" {
+	if result.Message != "model switched to local/qwen (model=qwen-code)" {
 		t.Fatalf("Message = %q", result.Message)
 	}
 }
@@ -133,8 +133,28 @@ func TestModelsCommandSwitchesModelWithReasoningEffort(t *testing.T) {
 	if gotReasoningEffort != "xhigh" {
 		t.Fatalf("reasoning effort = %q, want xhigh", gotReasoningEffort)
 	}
-	if result.Message != "model switched: local/qwen → qwen-code (reasoning=xhigh)" {
+	if result.Message != "model switched to local/qwen (model=qwen-code reasoning=xhigh)" {
 		t.Fatalf("Message = %q", result.Message)
+	}
+}
+
+func TestModelSwitchMessage(t *testing.T) {
+	tests := []struct {
+		result ModelSwitchResult
+		want   string
+	}{
+		{ModelSwitchResult{Ref: "local/qwen", Model: "qwen"}, "model switched to local/qwen"},
+		{ModelSwitchResult{Ref: "local/qwen", Model: "qwen", ReasoningEffort: "low"}, "model switched to local/qwen (reasoning=low)"},
+		{
+			ModelSwitchResult{Ref: "strata/qwen-nothink", Model: "qwen3", Params: []string{"chat_template_kwargs", "temperature"}},
+			"model switched to strata/qwen-nothink (model=qwen3 params=chat_template_kwargs,temperature)",
+		},
+		{ModelSwitchResult{Ref: "qwen", Model: "qwen"}, "model switched to qwen"},
+	}
+	for _, tc := range tests {
+		if got := tc.result.switchMessage(); got != tc.want {
+			t.Errorf("switchMessage(%+v) = %q, want %q", tc.result, got, tc.want)
+		}
 	}
 }
 

@@ -316,6 +316,43 @@ func TestTUIEchoesHandledSlashCommand(t *testing.T) {
 	}
 }
 
+func TestTUIModelLabelShowsConfiguredRef(t *testing.T) {
+	session := newTUISession(t, "tui-model-label")
+	defer func() { _ = session.Close() }()
+	registry := slashcmd.NewRegistry()
+	switchedModel := "tui-mock"
+	if err := registry.Register(slashcmd.ModelsCommand{
+		Switcher: func(_ context.Context, _ *agent.AgentSession, ref, _ string) (slashcmd.ModelSwitchResult, error) {
+			return slashcmd.ModelSwitchResult{Ref: ref, Model: switchedModel}, nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := stderr
+	stderr = &bytes.Buffer{}
+	t.Cleanup(func() { stderr = oldStderr })
+
+	// Startup ref describes the session's model: the footer names the preset.
+	state := &tuiState{session: session, cliOutput: output.NewCLIOutput(output.ModeCompact), registry: registry, modelRef: "strata/qwen-think-short", modelRefModel: "tui-mock"}
+	if got := state.modelLabel(); got != "strata/qwen-think-short" {
+		t.Fatalf("startup label = %q, want strata/qwen-think-short", got)
+	}
+
+	// /models replaces the ref.
+	if _, err := state.processLineWith("/models strata/qwen-nothink", func(*agent.AgentSession, string) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := state.modelLabel(); got != "strata/qwen-nothink" {
+		t.Fatalf("label after /models = %q, want strata/qwen-nothink", got)
+	}
+
+	// A ref for a different model ID than the session runs falls back to the ID.
+	state.modelRefModel = "other-model"
+	if got := state.modelLabel(); got != "tui-mock" {
+		t.Fatalf("mismatched label = %q, want tui-mock", got)
+	}
+}
+
 func TestTUIReportsPromptLifecycle(t *testing.T) {
 	session := newTUISession(t, "tui-herdr")
 	defer func() { _ = session.Close() }()

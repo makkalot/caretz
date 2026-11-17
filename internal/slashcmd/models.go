@@ -13,6 +13,28 @@ type ModelSwitchResult struct {
 	Ref             string
 	Model           string
 	ReasoningEffort string
+	// Params are the names of the extra request params the model sends.
+	Params []string
+}
+
+// switchMessage reports the switched-to ref and what it sends: the model ID
+// when it differs from the ref's name, plus reasoning effort and params.
+func (r ModelSwitchResult) switchMessage() string {
+	var details []string
+	if _, name, _ := strings.Cut(r.Ref, "/"); r.Model != "" && r.Model != name && r.Model != r.Ref {
+		details = append(details, "model="+r.Model)
+	}
+	if r.ReasoningEffort != "" {
+		details = append(details, "reasoning="+r.ReasoningEffort)
+	}
+	if len(r.Params) > 0 {
+		details = append(details, "params="+strings.Join(r.Params, ","))
+	}
+	message := "model switched to " + r.Ref
+	if len(details) > 0 {
+		message += " (" + strings.Join(details, " ") + ")"
+	}
+	return message
 }
 
 type ModelSwitcher func(ctx context.Context, session *agent.AgentSession, ref, reasoningEffort string) (ModelSwitchResult, error)
@@ -120,12 +142,8 @@ func (c ModelsCommand) Run(ctx context.Context, session *agent.AgentSession, arg
 	if err != nil {
 		return Result{}, err
 	}
-	message := fmt.Sprintf("model switched: %s → %s", result.Ref, result.Model)
-	if result.ReasoningEffort != "" {
-		message += fmt.Sprintf(" (reasoning=%s)", result.ReasoningEffort)
-	}
 	return Result{
-		Message:               message,
+		Message:               result.switchMessage(),
 		ActiveModel:           result.Model,
 		ActiveModelRef:        result.Ref,
 		ActiveReasoningEffort: result.ReasoningEffort,

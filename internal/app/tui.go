@@ -106,7 +106,7 @@ func startTUI(session *agent.AgentSession, logger *log.Logger, model, modelRef, 
 		Adapter: session.AdapterType(), ConfigRoot: configRoot,
 		ConfigRootSupplied: configRootSupplied, Resumable: resumable,
 	})
-	state := &tuiState{session: session, cliOutput: cliOutput, registry: slashCommandRegistry, outputMode: outputMode, resumable: resumable, lifecycle: reporter, hooks: hooks}
+	state := &tuiState{session: session, cliOutput: cliOutput, registry: slashCommandRegistry, outputMode: outputMode, resumable: resumable, lifecycle: reporter, hooks: hooks, modelRef: modelRef, modelRefModel: model}
 	state.reportLifecycle(herdr.StateIdle, "")
 	defer state.close()
 	if isTerminalStream(stdin) {
@@ -136,6 +136,20 @@ type tuiState struct {
 	asyncEvents eventing.Subscription
 	lifecycle   lifecycleReporter
 	hooks       tuiHooks
+	// modelRef is the configured ref (such as a preset name) last chosen
+	// for modelRefModel, the model ID it resolves to.
+	modelRef      string
+	modelRefModel string
+}
+
+// modelLabel names the session's model for the footer: the configured ref
+// when it still describes the session's model, else the raw model ID.
+func (s *tuiState) modelLabel() string {
+	model := s.session.Model()
+	if s.modelRef != "" && s.modelRefModel == model {
+		return s.modelRef
+	}
+	return model
 }
 
 type lifecycleReporter interface {
@@ -222,6 +236,9 @@ func (s *tuiState) processLineWith(text string, runner promptRunner) (exit bool,
 			}
 			output.Errorf(stderr, "%v", execErr)
 			return false, nil
+		}
+		if result.ActiveModelRef != "" {
+			s.modelRef, s.modelRefModel = result.ActiveModelRef, result.ActiveModel
 		}
 		if result.NewSession != nil {
 			oldSession := s.session
@@ -344,7 +361,7 @@ func runRawTUI(state *tuiState, root string, agentsDirs []string) error {
 	// Read through state so the footer follows /model, /clear and session switches.
 	editor.status = func() editorStatus {
 		return editorStatus{
-			Model:         state.session.Model(),
+			Model:         state.modelLabel(),
 			Reasoning:     state.session.ReasoningEffort(),
 			ContextTokens: state.session.EstimatedContextTokens(),
 			ContextWindow: state.session.ContextWindow(),

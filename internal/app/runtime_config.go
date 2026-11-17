@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -72,12 +73,7 @@ func modelSummary(settings runtimeSettings, source string) string {
 		b.WriteString(" reasoning=" + settings.ReasoningEffort)
 	}
 	if len(settings.Params) > 0 {
-		keys := make([]string, 0, len(settings.Params))
-		for key := range settings.Params {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		b.WriteString(" params=" + strings.Join(keys, ","))
+		b.WriteString(" params=" + strings.Join(paramNames(settings.Params), ","))
 	}
 	if settings.ContextWindow > 0 {
 		fmt.Fprintf(&b, " ctx=%d", settings.ContextWindow)
@@ -1313,6 +1309,11 @@ func overlayResolvedModelConfig(settings *runtimeSettings, resolved config.Resol
 	if resolved.SummaryTokens > 0 {
 		settings.SummaryTokens = resolved.SummaryTokens
 	}
+}
+
+// paramNames returns the sorted names of a model's extra request params.
+func paramNames(params map[string]json.RawMessage) []string {
+	return slices.Sorted(maps.Keys(params))
 }
 
 // sameRequestParams reports whether two models send the same extra params.
