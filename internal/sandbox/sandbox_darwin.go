@@ -188,8 +188,14 @@ func generateSandboxProfileForRun(cwd, tmpDir string, extraBinaries []string, un
 			}
 		}
 		if allowDocker {
+			// connect(2) follows symlinked socket paths such as
+			// /var/run/docker.sock -> ~/.docker/run/docker.sock, which needs
+			// metadata access on the link itself, or the connect fails with
+			// EACCES. Grant only the exact socket paths, not their parents.
+			// (/var is already granted via macOSReadRoots.)
 			for _, path := range dockerSocketPaths() {
 				profile.WriteString(profileRule("allow", "network-outbound", "literal", path))
+				profile.WriteString(profileRule("allow", "file-read-metadata", "literal", path))
 			}
 		}
 		// An exact socket read grant, such as an SSH agent, must also be

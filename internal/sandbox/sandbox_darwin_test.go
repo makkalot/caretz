@@ -181,6 +181,13 @@ func TestSandboxProfileDockerSocketFollowsPermission(t *testing.T) {
 			t.Fatalf("Docker socket permission mismatch for %s", socket)
 		}
 	}
+	// Connecting through the docker.sock symlink needs metadata access on it.
+	for _, link := range []string{"/var/run/docker.sock", "/Users/tester/.docker/run/docker.sock"} {
+		rule := fmt.Sprintf(`(allow file-read-metadata (literal "%s"))`, link)
+		if strings.Contains(denied, rule) || !strings.Contains(allowed, rule) {
+			t.Fatalf("Docker socket metadata permission mismatch for %s", link)
+		}
+	}
 
 	// A read grant naming the Docker socket must not bypass AllowDocker.
 	dir, err := os.MkdirTemp("", "dk-")
