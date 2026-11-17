@@ -56,6 +56,26 @@ type RunOptions struct {
 	WritableRoots    []string
 	NetworkAllowlist []string
 	AuthorizeNetwork func(context.Context, string) (bool, error)
+	// OnBackgroundExit is called once when a background job started by a
+	// Session exits on its own or is killed by a command. It is not called
+	// when Caretz stops the job: turn cancellation, /clear, session close, or
+	// a supervisor restart. It runs on the session's reader goroutine and
+	// must not block.
+	OnBackgroundExit func(BackgroundExit)
+}
+
+// BackgroundExit describes how a background job ended.
+type BackgroundExit struct {
+	PID     int
+	Command string
+	// ExitCode is -1 when the job was killed by a signal.
+	ExitCode int
+	// Signal names the signal that killed the job, if any.
+	Signal string
+	// LogPath is the job's log as the job saw it, under $TMPDIR.
+	LogPath string
+	// LogTail is the end of the job's combined output.
+	LogTail string
 }
 
 type Runner struct {

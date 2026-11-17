@@ -175,12 +175,14 @@ test-linux:
 ## test-sandbox-linux: Run all sandbox tests, including Linux integration, in a privileged disposable container
 # Tests run as an unprivileged user: that is how caretz runs on a Linux host, and
 # root inside a container would make the privilege-escalation checks meaningless.
+# The root-owned ssh_config drop-in mirrors current Ubuntu, where systemd ships one.
 test-sandbox-linux:
 	docker run --privileged --rm \
 		-v $(CURDIR):/workspace \
 		-w /workspace \
 		$(SANDBOX_TEST_IMAGE) \
-		sh -c 'apt-get update -qq >/dev/null && apt-get install -y -qq bubblewrap curl git >/dev/null && \
+		sh -c 'apt-get update -qq >/dev/null && apt-get install -y -qq bubblewrap curl git openssh-client >/dev/null && \
+			printf "Host unix/*\n" > /etc/ssh/ssh_config.d/20-caretz-test.conf && \
 			go mod download && chmod -R a+rX "$$(go env GOMODCACHE)" && \
 			(getent passwd 1000 >/dev/null || useradd -M -u 1000 -s /bin/sh caretz-test) && \
 			setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp GOCACHE=/tmp/gocache GOFLAGS=-buildvcs=false \

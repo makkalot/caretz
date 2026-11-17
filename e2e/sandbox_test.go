@@ -93,11 +93,33 @@ func TestSandboxBackgroundJobKeepsRunning(t *testing.T) {
 	s.Given().
 		Model(story.RunsInBackground("sleep 1; echo ready > status.txt")).
 		Model(story.RunsCommand("sleep 3; cat status.txt")).
-		Model(story.Replies("The background job finished"))
+		Model(story.Replies("The background job finished")).
+		// The job ended during the turn, so caretz reports it before exiting.
+		Model(story.Replies("The job is done"))
 	s.When().Ask("start the job and check on it")
 	s.Then().
 		Succeeds().
 		Saw(story.Contains("ready"))
+}
+
+func TestSandboxBackgroundJobReportsWhenItEnds(t *testing.T) {
+	s := sandbox.Scenario(t, "caretz tells the assistant when a background job ends")
+	s.Describe("The assistant does not have to poll: the exit status and the end of the log arrive as a new message.")
+	s.Given().
+		Model(story.RunsInBackground("echo compiling; echo 'main.go:3: undefined: Foo' >&2; exit 2").ID("build")).
+		Model(story.RunsCommand("sleep 1; echo other work done")).
+		Model(story.Replies("The build is running in the background")).
+		Model(story.Replies("The build failed: Foo is undefined in main.go"))
+	s.When().Ask("build in the background while you do other work")
+	s.Then().
+		Succeeds().
+		RequestCount(4).
+		Stdout(story.Contains("The build failed: Foo is undefined in main.go"))
+	s.Then().Request(2).ToolResult("build", story.Contains("You will get a message when it exits"))
+	s.Then().LastRequest().
+		User(story.Contains("Background command finished.")).
+		User(story.Contains("Exit code: 2")).
+		User(story.Contains("main.go:3: undefined: Foo"))
 }
 
 func TestSandboxPlanModeChangesNothing(t *testing.T) {

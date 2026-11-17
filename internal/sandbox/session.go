@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -30,6 +31,9 @@ const (
 	maxSessionFrame       = 3 * 1024 * 1024
 	maxBackgroundJobs     = 8
 	backgroundLogLimit    = 1 * 1024 * 1024
+	// backgroundExitTail is how much of a finished job's log its exit report
+	// carries.
+	backgroundExitTail = 4 * 1024
 )
 
 type sessionRequest struct {
@@ -50,6 +54,8 @@ type sessionResponse struct {
 	Error    string `json:"error,omitempty"`
 	ExitCode int    `json:"exit_code"`
 	PID      int    `json:"pid,omitempty"`
+	// Signal names the signal that ended a background job ("exited" only).
+	Signal string `json:"signal,omitempty"`
 }
 
 type tailLogWriter struct {
@@ -100,6 +106,36 @@ func (w *tailLogWriter) Write(p []byte) (int, error) {
 	}
 	_, err := w.file.Write(p)
 	return original, err
+}
+
+// tail returns up to the last n bytes of the log.
+func (w *tailLogWriter) tail(n int) string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	info, err := w.file.Stat()
+	if err != nil {
+		return ""
+	}
+	size := info.Size()
+	start := max(size-int64(n), 0)
+	data := make([]byte, size-start)
+	read, _ := w.file.ReadAt(data, start)
+	return strings.ToValidUTF8(string(data[:read]), "")
+}
+
+// jobExitStatus reports a finished job's exit code, or -1 and the signal
+// that killed it.
+func jobExitStatus(cmd *exec.Cmd, waitErr error) (int, string) {
+	if cmd.ProcessState == nil {
+		if waitErr != nil {
+			return -1, ""
+		}
+		return 0, ""
+	}
+	if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+		return -1, status.Signal().String()
+	}
+	return cmd.ProcessState.ExitCode(), ""
 }
 
 // Session is one persistent command supervisor. Calls use fresh bash
@@ -225,11 +261,24 @@ func (s *Session) Run(ctx context.Context, cwd, command string, opts RunOptions)
 	if opts.Background {
 		req.TimeoutSeconds = 0
 	}
+	jobStarted := false
+	if opts.Background && opts.OnBackgroundExit != nil {
+		connection.watch(id, func(resp sessionResponse) {
+			opts.OnBackgroundExit(backgroundExit(command, resp))
+		})
+		defer func() {
+			if !jobStarted {
+				connection.unwatch(id)
+			}
+		}()
+	}
 	if err := connection.write(req); err != nil {
 		return s.fail(err)
 	}
 	if opts.Background {
 		turnscope.From(ctx).Register(func() (string, error) {
+			// The stopped turn already knows; do not report the kill.
+			connection.unwatch(id)
 			resp, err := connection.cancel(id)
 			if err != nil {
 				return fmt.Sprintf("Background request %d cleanup failed: %v", id, err), err
@@ -282,7 +331,29 @@ func (s *Session) Run(ctx context.Context, cwd, command string, opts RunOptions)
 	if resp.ExitCode != 0 {
 		return resp.Stdout, resp.Stderr, fmt.Errorf("command exited with status %d", resp.ExitCode)
 	}
+	jobStarted = true
 	return resp.Stdout, resp.Stderr, nil
+}
+
+// backgroundExit decodes a job's "exited" frame. The supervisor runs inside
+// the sandbox, so its fields are bounded and cleaned before use.
+func backgroundExit(command string, resp sessionResponse) BackgroundExit {
+	exit := BackgroundExit{PID: resp.PID, Command: command, ExitCode: resp.ExitCode, Signal: truncateUTF8(resp.Signal, 64), LogTail: truncateUTF8(resp.Stdout, backgroundExitTail)}
+	if exit.ExitCode < -1 || exit.ExitCode > 255 {
+		exit.ExitCode = -1
+	}
+	if resp.PID > 0 {
+		exit.LogPath = fmt.Sprintf("$TMPDIR/caretz/processes/%d.log", resp.PID)
+	}
+	return exit
+}
+
+// truncateUTF8 keeps at most the last n bytes of s as valid UTF-8.
+func truncateUTF8(s string, n int) string {
+	if len(s) > n {
+		s = s[len(s)-n:]
+	}
+	return strings.ToValidUTF8(s, "")
 }
 
 func (s *Session) fail(err error) (string, string, error) {
@@ -387,6 +458,10 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) stopLocked() error {
+	// Jobs Caretz stops itself are not reported as exits.
+	if s.connection != nil {
+		s.connection.unwatchAll()
+	}
 	if s.in != nil {
 		_ = s.in.Close()
 	}
@@ -659,17 +734,21 @@ func runSessionSupervisor() {
 			jobs[pid] = cmd
 			jobsMu.Unlock()
 			go func(requestID uint64) {
-				_ = cmd.Wait()
+				waitErr := cmd.Wait()
 				forgetEmptyGroup(pid)
 				activeMu.Lock()
 				if syscall.Kill(-pid, 0) == syscall.ESRCH {
 					delete(requestGroups, requestID)
 				}
 				activeMu.Unlock()
+				exited := sessionResponse{ID: requestID, Type: "exited", PID: pid, Stdout: logWriter.tail(backgroundExitTail)}
+				exited.ExitCode, exited.Signal = jobExitStatus(cmd, waitErr)
 				_ = provisional.Close()
 				jobsMu.Lock()
 				delete(jobs, pid)
 				jobsMu.Unlock()
+				// The client reports this only if it still watches the job.
+				respond(exited)
 			}(req.ID)
 			resp.Stdout = fmt.Sprintf("Background command started.\nPID: %d\nLog: $TMPDIR/caretz/processes/%d.log\nStop: kill -TERM -- -%d", pid, pid, pid)
 			respond(resp)
