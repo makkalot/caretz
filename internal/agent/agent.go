@@ -1929,6 +1929,20 @@ func (a *AgentSession) ChannelID() string {
 	return a.channelId
 }
 
+// CompactionCount returns how many times this session's context has been
+// compacted, including compactions from before a resume. It returns 0 when
+// the count cannot be read.
+func (a *AgentSession) CompactionCount() int {
+	if a.AgentLoop == nil || a.contextSessionStore == nil {
+		return 0
+	}
+	count, err := a.contextSessionStore.CompactionCount(a.channelId)
+	if err != nil {
+		return 0
+	}
+	return count
+}
+
 // LLMSessionID is the opaque session ID providers such as OpenCode use for
 // routing; model calls made outside the agent loop set it with
 // llm.WithSessionID.

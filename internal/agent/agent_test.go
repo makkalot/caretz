@@ -4507,12 +4507,18 @@ func TestAgentSession_CompactNow(t *testing.T) {
 		session.llmMessages = append(session.llmMessages, user, asst)
 	}
 
+	if got := session.CompactionCount(); got != 0 {
+		t.Fatalf("CompactionCount() before compaction = %d, want 0", got)
+	}
 	result, err := session.CompactNow(context.Background())
 	if err != nil {
 		t.Fatalf("CompactNow() error = %v", err)
 	}
 	if result == nil || !result.Compacted {
 		t.Fatalf("CompactNow() result = %+v, want compacted", result)
+	}
+	if got := session.CompactionCount(); got != 1 {
+		t.Fatalf("CompactionCount() after compaction = %d, want 1", got)
 	}
 	if result.Reason != "manual-command" {
 		t.Fatalf("CompactNow() reason = %q, want manual-command", result.Reason)

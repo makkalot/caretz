@@ -54,6 +54,8 @@ type editorStatus struct {
 	Reasoning     string
 	ContextTokens int
 	ContextWindow int
+	// Compactions is how many times the session's context has been compacted.
+	Compactions int
 	// Usage is the most recent response's usage; zero until the first reply.
 	Usage llm.Usage
 	// Speed is the most recent response's generation speed; zero when unknown.
@@ -434,7 +436,9 @@ func (e *inputEditor) menuRow(text string, selected bool) string {
 	return "    " + text
 }
 
-// footer renders "mode · model reasoning · ctx · cache · tok/s" under the input.
+// footer renders "mode · model reasoning · ctx · compactions · cache · tok/s"
+// under the input; the compaction count appears only after the second
+// compaction, so a single one doesn't spend footer space.
 // Segments are dropped from the right until the row fits, so it never wraps.
 func (e *inputEditor) footer(width int) string {
 	segments := []string{e.style.Muted("build")}
@@ -447,6 +451,9 @@ func (e *inputEditor) footer(width int) string {
 	}
 	if e.status != nil {
 		segments = append(segments, e.style.Muted("ctx "+formatFooterContext(status.ContextTokens, status.ContextWindow)))
+	}
+	if status.Compactions > 1 {
+		segments = append(segments, e.style.Muted(fmt.Sprintf("compacted %d×", status.Compactions)))
 	}
 	if status.Usage.PromptTokens > 0 {
 		segments = append(segments, e.style.Muted("cache "+output.CachePercent(status.Usage)))

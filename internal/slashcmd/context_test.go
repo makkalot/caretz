@@ -24,7 +24,7 @@ func TestContextCommandShowsCurrentModelAndProfile(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{"model: " + wantModel, "profile: coding", "context: ", "reserved: ", "messages: "} {
+		for _, want := range []string{"model: " + wantModel, "profile: coding", "context: ", "reserved: ", "messages: ", "compactions: 0"} {
 			if !strings.Contains(result.Message, want) {
 				t.Fatalf("context output missing %q: %q", want, result.Message)
 			}

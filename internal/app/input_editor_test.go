@@ -386,6 +386,28 @@ func TestEditorFooterShowsSpeedAfterCache(t *testing.T) {
 	}
 }
 
+func TestEditorFooterShowsCompactionCountAfterContext(t *testing.T) {
+	e := newTestEditor(t, "", t.TempDir())
+	e.status = func() editorStatus {
+		return editorStatus{
+			Model:         "m",
+			ContextTokens: 950,
+			Compactions:   3,
+			Usage:         llm.Usage{PromptTokens: 1000, CachedPromptTokens: 500},
+		}
+	}
+	e.statusSnapshot = e.status()
+
+	if got, want := e.footer(80), "  build · m · ctx 950 · compacted 3× · cache 50%"; got != want {
+		t.Fatalf("footer = %q, want %q", got, want)
+	}
+
+	e.statusSnapshot.Compactions = 1
+	if got, want := e.footer(80), "  build · m · ctx 950 · cache 50%"; got != want {
+		t.Fatalf("footer with one compaction = %q, want %q", got, want)
+	}
+}
+
 func TestEditorFooterHidesCacheBeforeFirstResponse(t *testing.T) {
 	e := newTestEditor(t, "", t.TempDir())
 	e.status = func() editorStatus { return editorStatus{Model: "m", ContextTokens: 950} }

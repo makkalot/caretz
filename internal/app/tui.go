@@ -348,6 +348,7 @@ func runRawTUI(state *tuiState, root string, agentsDirs []string) error {
 			Reasoning:     state.session.ReasoningEffort(),
 			ContextTokens: state.session.EstimatedContextTokens(),
 			ContextWindow: state.session.ContextWindow(),
+			Compactions:   state.session.CompactionCount(),
 			Usage:         state.cliOutput.LatestUsage(),
 			Speed:         state.cliOutput.LatestSpeed(),
 		}
