@@ -32,9 +32,29 @@ type Command struct {
 type ParsedOptions struct {
 	Value   any
 	changed map[string]bool
+	set     []setFlag
 }
 
+type setFlag struct{ name, value string }
+
 func (o ParsedOptions) Changed(name string) bool { return o.changed[name] }
+
+// FlagArgs re-emits the flags that were set, in command-line order, as
+// --name=value tokens, skipping the excluded names. Repeated flags stay
+// repeated, so the result parses back to the same option values.
+func (o ParsedOptions) FlagArgs(exclude ...string) []string {
+	skip := make(map[string]bool, len(exclude))
+	for _, name := range exclude {
+		skip[name] = true
+	}
+	var args []string
+	for _, flag := range o.set {
+		if !skip[flag.name] {
+			args = append(args, "--"+flag.name+"="+flag.value)
+		}
+	}
+	return args
+}
 
 type Result struct {
 	Command     *Command
@@ -157,6 +177,7 @@ func (c *Command) Parse(args []string) (*Result, error) {
 				return result, fmt.Errorf("invalid value %q for flag -%s: %w", value, name, err)
 			}
 			owners[name].changed[name] = true
+			owners[name].set = append(owners[name].set, setFlag{name: name, value: value})
 			continue
 		}
 		result.Args = append(result.Args, arg)

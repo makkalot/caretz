@@ -41,6 +41,12 @@ type Options struct {
 	// tagged block an integration's tool returns, in the built-in TUI and
 	// prompt mode.
 	MessageRenderers []tui.MessageRenderer
+	// HiddenPaths are absolute paths, added to the built-in protected paths,
+	// that the agent's file tools and sandboxed commands may not read or
+	// write. An embedder hosting several workspaces in one process lists the
+	// other workspaces' config roots here so one workspace cannot read
+	// another's sessions, config, or peer messages.
+	HiddenPaths []string
 }
 
 type Runtime struct {
@@ -88,6 +94,7 @@ func (opts Options) app() caretzapp.Options {
 		SessionIntegrations: opts.SessionIntegrations,
 		PermissionPrompts:   opts.PermissionPrompts,
 		MessageRenderers:    opts.MessageRenderers,
+		HiddenPaths:         opts.HiddenPaths,
 		BuildInfo: caretzapp.BuildInfo{
 			Version:   Version,
 			Commit:    Commit,
@@ -141,6 +148,30 @@ func (r *Runtime) NewACPServer(opts acp.ServerOptions) (acp.Server, error) {
 		return nil, fmt.Errorf("runtime is nil")
 	}
 	return caretzapp.NewACPServer(r.inner, opts.AllowedModels)
+}
+
+// PeerBot is a peer bot the runtime's workspace defines. Running and PID say
+// whether a process currently runs it; Queued counts messages waiting for it.
+type PeerBot = caretzapp.PeerBotStatus
+
+// PeerBots lists the peer bots the runtime's workspace defines and its
+// profile allows, sorted by name. Run one as an ACP server with
+// Run(ctx, []string{"acp", "--peer", name, ...}, ...); clients then open its
+// session with session/load.
+func (r *Runtime) PeerBots() ([]PeerBot, error) {
+	if r == nil || r.inner == nil {
+		return nil, fmt.Errorf("runtime is nil")
+	}
+	return r.inner.PeerBots()
+}
+
+// AgentsDirs lists the directories the runtime loads agent definitions from,
+// in precedence order. Watch them to notice added, removed, or edited bots.
+func (r *Runtime) AgentsDirs() []string {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	return append([]string(nil), r.inner.AgentsDirs...)
 }
 
 var _ acp.Runtime = (*Runtime)(nil)

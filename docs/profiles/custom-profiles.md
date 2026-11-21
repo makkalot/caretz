@@ -58,7 +58,7 @@ process when you need infrastructure access.
 Operational settings belong under a profile: `systemPrompt`, `tools`,
 `disabledTools`, `toolConfig`, `skills`, `agents`, `sandbox`,
 `execution.docker`, `tasks`, `goal`, [`schedules`](../schedules/models.md),
-`output`, `plan`, `incognito`, `request`, and `modelDiscovery`. Legacy root-level `sandbox`, `execution`, `tools`, `tasks`,
+[`peers`](../peers.md#run-it), `output`, `plan`, `incognito`, `request`, and `modelDiscovery`. Legacy root-level `sandbox`, `execution`, `tools`, `tasks`,
 and `output` are rejected with a migration message.
 
 Profile resolution is deliberately interleaved:

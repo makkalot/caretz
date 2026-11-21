@@ -139,3 +139,33 @@ func receiveCall(t *testing.T, calls <-chan commandCall) commandCall {
 		return commandCall{}
 	}
 }
+
+func TestReporterNamesAndUnnamesBotPane(t *testing.T) {
+	calls := make(chan commandCall, 4)
+	reporter := NewFromEnvironment(Options{
+		Adapter: "peer", Resumable: true, DisplayName: "coordinator",
+		Getenv: validEnvironment,
+		Run: func(_ context.Context, path string, args []string) error {
+			calls <- commandCall{path: path, args: append([]string(nil), args...)}
+			return nil
+		},
+	})
+	reporter.Report(StateIdle, "", "coordinator")
+	if state := receiveCall(t, calls); state.args[1] != "report-agent" {
+		t.Fatalf("first call = %#v, want report-agent", state.args)
+	}
+	if got, want := receiveCall(t, calls).args, []string{"pane", "report-metadata", "w1:p2", "--source", "caretz", "--display-agent", "coordinator"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("metadata args = %#v, want %#v", got, want)
+	}
+	reporter.Report(StateWorking, "", "coordinator")
+	if state := receiveCall(t, calls); state.args[1] != "report-agent" {
+		t.Fatalf("later call = %#v, want only report-agent", state.args)
+	}
+	reporter.Close()
+	if got, want := receiveCall(t, calls).args, []string{"pane", "report-metadata", "w1:p2", "--source", "caretz", "--clear-display-agent"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("clear args = %#v, want %#v", got, want)
+	}
+	if release := receiveCall(t, calls); release.args[1] != "release-agent" {
+		t.Fatalf("last call = %#v, want release-agent", release.args)
+	}
+}

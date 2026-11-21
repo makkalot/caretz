@@ -17,20 +17,24 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/makkalot/caretz/internal/agent"
 	"github.com/makkalot/caretz/internal/chatgptauth"
 	"github.com/makkalot/caretz/internal/config"
 	"github.com/makkalot/caretz/internal/output"
+	"github.com/makkalot/caretz/internal/peers"
 	"github.com/makkalot/caretz/internal/sandbox"
 	"github.com/makkalot/caretz/internal/sessions"
+	"github.com/makkalot/caretz/internal/sessiontools"
 	"github.com/makkalot/caretz/internal/skills"
 	"github.com/makkalot/caretz/internal/slashcmd"
 	"github.com/makkalot/caretz/internal/tools"
 	"github.com/makkalot/caretz/internal/uuid"
 	"github.com/makkalot/caretz/lib/eventing"
 	"github.com/makkalot/caretz/lib/llm"
+	"github.com/makkalot/caretz/lib/progress"
 	"github.com/makkalot/caretz/lib/types"
 )
 
@@ -55,6 +59,9 @@ type acpServer struct {
 	allowedModels map[string]bool
 	// fileConfigMu guards rt.FileConfig, which allowing a model replaces.
 	fileConfigMu sync.RWMutex
+	// peer, when set, makes this server run one peer bot: it serves only the
+	// bot's durable session, which runs whether or not a client is attached.
+	peer *peerLaunch
 }
 
 func (s *acpServer) fileConfig() config.Config {
@@ -87,6 +94,74 @@ type acpSession struct {
 	subagentSeq     uint64
 	statusSeq       uint64
 	fileSender      *acpFileSender
+	// clientMessages holds the ids of user messages the client sent with
+	// session/prompt, which the prompt echoes itself. Every other user
+	// message, such as the one a peer bot's message starts a turn with, is
+	// echoed when it is recorded.
+	clientMessages map[string]bool
+	// turnGate lets one turn run at a time, whether the client prompted it
+	// or not, so a background turn's updates never interleave with a
+	// prompt's. background is the running turn the client did not prompt.
+	turnGate   chan struct{}
+	background *acpTurn
+	// turn describes the running turn, prompted or not, for activeTurn.
+	turn *acpTurnInfo
+	// detached is set while no client has the session open, which only a
+	// peer bot's session can be. Its live updates are dropped meanwhile;
+	// session/load replays them from history.
+	detached atomic.Bool
+}
+
+func (s *acpSession) gate() chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnGate == nil {
+		s.turnGate = make(chan struct{}, 1)
+	}
+	return s.turnGate
+}
+
+// acquireTurn waits until no other turn of the session is running.
+func (s *acpSession) acquireTurn(ctx context.Context) error {
+	gate := s.gate()
+	select {
+	case gate <- struct{}{}:
+		return nil
+	default:
+	}
+	progress.Emit(ctx, "Waiting for a background turn to finish; cancel stops this prompt.")
+	select {
+	case gate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *acpSession) releaseTurn() { <-s.gate() }
+
+func (s *acpSession) markClientMessage(event *types.Event) {
+	message, err := eventing.DecodeLogMessage(event)
+	if err != nil || message.MessageID == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.clientMessages == nil {
+		s.clientMessages = map[string]bool{}
+	}
+	s.clientMessages[message.MessageID] = true
+	s.mu.Unlock()
+}
+
+// takeClientMessage reports whether id came from the client, and forgets it.
+func (s *acpSession) takeClientMessage(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.clientMessages[id] {
+		return false
+	}
+	delete(s.clientMessages, id)
+	return true
 }
 
 type acpFileSender struct {
@@ -244,7 +319,45 @@ func (s *acpServer) ServeACP(ctx context.Context, input io.Reader, output io.Wri
 	s.in = input
 	s.out = output
 	defer func() { err = errors.Join(err, s.closeSessions()) }()
+	if s.peer != nil {
+		if err := s.openPeerSession(); err != nil {
+			return err
+		}
+	}
 	return s.Serve(ctx)
+}
+
+// openPeerSession opens the bot's durable session, detached until a client
+// loads it, and starts its messaging so it works through its inbox at once.
+func (s *acpServer) openPeerSession() error {
+	name := s.peer.def.Name
+	if err := validateACPSessionID(name); err != nil {
+		return fmt.Errorf("peer bot %s cannot be served over ACP: %w", name, err)
+	}
+	session, err := s.openSession(name, s.peer.workDir)
+	if err != nil {
+		return fmt.Errorf("open peer bot %s: %w", name, err)
+	}
+	session.detached.Store(true)
+	s.sessionsMu.Lock()
+	s.sessions[name] = session
+	s.sessionsMu.Unlock()
+	if err := session.session.InstallIntegration(s.peer.integration(s.rt, s.rt.Logger)); err != nil {
+		return fmt.Errorf("start messaging for peer bot %s: %w", name, err)
+	}
+	return nil
+}
+
+// peerSession returns the bot's session when id names it.
+func (s *acpServer) peerSession(id string) (*acpSession, error) {
+	if id != s.peer.def.Name {
+		return nil, fmt.Errorf("this server runs peer bot %s; unknown sessionId: %s", s.peer.def.Name, id)
+	}
+	session := s.getSession(id)
+	if session == nil {
+		return nil, fmt.Errorf("peer bot %s is not running", id)
+	}
+	return session, nil
 }
 
 func (s *acpServer) Serve(ctx context.Context) error {
@@ -415,7 +528,7 @@ func (s *acpServer) handle(ctx context.Context, req acpRequest) (any, *acpError)
 	case "session/load", "session/resume":
 		return s.handleSessionLoad(req.Method, req.Params)
 	case "session/prompt":
-		return s.handlePrompt(ctx, req.Params)
+		return s.handlePrompt(ctx, req.ID, req.Params)
 	case "session/cancel":
 		return s.handleCancel(req.Params)
 	case "session/close":
@@ -442,6 +555,9 @@ func (s *acpServer) handleSessionNew(params json.RawMessage) (any, *acpError) {
 	var p acpSessionParams
 	if err := decodeParams(params, &p); err != nil {
 		return nil, invalidParams(err)
+	}
+	if s.peer != nil {
+		return nil, invalidParams(fmt.Errorf("this server runs peer bot %s; open its session with session/load", s.peer.def.Name))
 	}
 	if strings.TrimSpace(p.CWD) == "" {
 		p.CWD = s.rt.CWD
@@ -484,6 +600,15 @@ func (s *acpServer) handleSessionLoad(method string, params json.RawMessage) (an
 	}
 	if err := validateACPSessionID(p.SessionID); err != nil {
 		return nil, invalidParams(err)
+	}
+	if s.peer != nil {
+		// The bot's session is already running; loading attaches the client.
+		session, err := s.peerSession(p.SessionID)
+		if err != nil {
+			return nil, invalidParams(err)
+		}
+		session.detached.Store(false)
+		return s.sessionSetupResult(session), nil
 	}
 	cwd := strings.TrimSpace(p.CWD)
 	if cwd == "" {
@@ -538,6 +663,14 @@ func (s *acpServer) handleSessionList(params json.RawMessage) (any, *acpError) {
 	if err := decodeParams(params, &p); err != nil {
 		return nil, invalidParams(err)
 	}
+	if s.peer != nil {
+		name := s.peer.def.Name
+		item := map[string]any{"sessionId": name, "title": "Peer bot " + name}
+		if info, err := os.Stat(filepath.Join(s.rt.SessionsDir, peerAdapter, name, "events.jsonpl")); err == nil {
+			item["updatedAt"] = info.ModTime().UTC().Format(time.RFC3339)
+		}
+		return map[string]any{"sessions": []map[string]any{item}}, nil
+	}
 	cwd := strings.TrimSpace(p.CWD)
 	if cwd == "" {
 		cwd = s.rt.CWD
@@ -586,6 +719,7 @@ func (s *acpServer) notifyAfterResponse(req acpRequest, result any) {
 			for _, notice := range session.modelNotices {
 				s.notifyAgentText(session.id, notice)
 			}
+			s.enablePeerMessaging(session)
 		}
 	case "session/load", "session/resume":
 		var p acpSessionParams
@@ -600,10 +734,34 @@ func (s *acpServer) notifyAfterResponse(req acpRequest, result any) {
 		for _, notice := range session.modelNotices {
 			s.notifyAgentText(session.id, notice)
 		}
+		s.enablePeerMessaging(session)
 	}
 }
 
-func (s *acpServer) handlePrompt(ctx context.Context, params json.RawMessage) (any, *acpError) {
+// enablePeerMessaging lets a ready session message the workspace's peer bots
+// and receive their replies. It runs after the session/new response, or after
+// session/load has replayed history, so a turn started by a message that was
+// waiting in the inbox streams after them instead of racing them.
+func (s *acpServer) enablePeerMessaging(session *acpSession) {
+	if s.rt.Incognito {
+		return
+	}
+	agentSession := session.session
+	if _, installed := agentSession.Integration(peers.IntegrationName); installed {
+		return
+	}
+	_, agentsDirs := s.resourceDirsForWorkspace(session.cwd)
+	factory, err := acpPeerIntegration(s.rt, session.cwd, agentsDirs)
+	if err == nil && factory != nil {
+		err = agentSession.InstallIntegration(factory)
+	}
+	if err != nil {
+		s.rt.Logger.Warn("Peer messaging disabled for ACP session %s: %v", session.id, err)
+		session.debugf("peer messaging disabled: error=%v", err)
+	}
+}
+
+func (s *acpServer) handlePrompt(ctx context.Context, requestID json.RawMessage, params json.RawMessage) (result any, rpcErr *acpError) {
 	var p acpPromptParams
 	if err := decodeParams(params, &p); err != nil {
 		return nil, invalidParams(err)
@@ -647,8 +805,37 @@ func (s *acpServer) handlePrompt(ctx context.Context, params json.RawMessage) (a
 		}
 		session.mu.Unlock()
 	}()
+	// Wait for a running background turn; the client may cancel meanwhile.
+	if err := session.acquireTurn(turnCtx); err != nil {
+		session.debugf("session/prompt cancelled while waiting for a background turn")
+		return map[string]any{"stopReason": "cancelled"}, nil
+	}
+	defer session.releaseTurn()
 
 	userEvent := eventing.NewLogMessageWithAttachments(session.id, "", prompt, displayPrompt, acpAdapterType, session.id, "", attachments)
+	session.markClientMessage(userEvent)
+	defer func() {
+		if message, err := eventing.DecodeLogMessage(userEvent); err == nil {
+			session.takeClientMessage(message.MessageID)
+		}
+	}()
+	// The turn starts once its user message is echoed and ends just before
+	// the prompt response, so every observer sees the same boundaries.
+	var turnInfo *acpTurnInfo
+	defer func() {
+		if turnInfo == nil {
+			return
+		}
+		stopReason, errText := "error", ""
+		if rpcErr != nil {
+			errText = rpcErr.Message
+		} else if values, ok := result.(map[string]any); ok {
+			if reason, ok := values["stopReason"].(string); ok {
+				stopReason = reason
+			}
+		}
+		s.endTurn(session, turnInfo, stopReason, errText)
+	}()
 	accepted := func() {
 		committed = true
 		message, _ := eventing.DecodeLogMessage(userEvent)
@@ -659,6 +846,7 @@ func (s *acpServer) handlePrompt(ctx context.Context, params json.RawMessage) (a
 				"content":       acpUserContent(session.id, message),
 			},
 		})
+		turnInfo = s.beginTurn(session, acpTurnSourcePrompt, requestID)
 	}
 	if session.slashCommands.HandlesSessionInput(session.session, prompt) {
 		if err := session.session.AppendAuditEvent(userEvent); err != nil {
@@ -738,14 +926,16 @@ func (s *acpServer) handleCancel(params json.RawMessage) (any, *acpError) {
 		return nil, invalidParams(fmt.Errorf("unknown sessionId: %s", p.SessionID))
 	}
 	session.mu.Lock()
-	turn := session.active
+	turn, background := session.active, false
+	if turn == nil && session.background != nil {
+		// No prompt is running, so stop the turn the client is watching.
+		turn, background = session.background, true
+	}
 	session.mu.Unlock()
 	if turn != nil {
 		turn.stopNow()
-		session.debugf("session/cancel requested: active=true")
-	} else {
-		session.debugf("session/cancel requested: active=false")
 	}
+	session.debugf("session/cancel requested: active=%v background=%v", turn != nil && !background, background)
 	return map[string]any{}, nil
 }
 
@@ -761,12 +951,27 @@ func (s *acpServer) handleClose(params json.RawMessage) (any, *acpError) {
 	if session == nil {
 		return nil, invalidParams(fmt.Errorf("unknown sessionId: %s", p.SessionID))
 	}
+	if s.peer != nil {
+		// The bot keeps running; closing only detaches the client.
+		session.mu.Lock()
+		turn := session.active
+		session.mu.Unlock()
+		if turn != nil {
+			turn.stopNow()
+		}
+		session.detached.Store(true)
+		session.debugf("session/close detached the client from peer bot")
+		return map[string]any{}, nil
+	}
 	session.mu.Lock()
-	turn := session.active
+	turn, background := session.active, session.background
 	session.active = nil
 	session.mu.Unlock()
 	if turn != nil {
 		turn.stopNow()
+	}
+	if background != nil {
+		background.stopNow()
 	}
 	session.debugf("session/close requested: active=%v", turn != nil)
 	s.sessionsMu.Lock()
@@ -838,7 +1043,9 @@ func (s *acpServer) handleSetConfigOption(ctx context.Context, params json.RawMe
 }
 
 func (s *acpServer) sessionSetupResult(session *acpSession) map[string]any {
-	result := map[string]any{"sessionId": session.id}
+	// activeTurn is null when no turn runs; otherwise the client can show the
+	// session busy and match the prompt response by promptRequestId.
+	result := map[string]any{"sessionId": session.id, "activeTurn": session.activeTurn()}
 	if options := s.configOptionsForSession(session); len(options) > 0 {
 		result["configOptions"] = options
 	}
@@ -1066,9 +1273,10 @@ func (s *acpServer) getSession(id string) *acpSession {
 }
 
 func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
+	adapter := s.sessionAdapter()
 	debugLogPath := ""
 	if s.acpDebugEnabled() {
-		debugLogPath = filepath.Join(s.rt.SessionsDir, acpAdapterType, id, "debug.log")
+		debugLogPath = filepath.Join(s.rt.SessionsDir, adapter, id, "debug.log")
 		s.writeACPDebugLog(id, "openSession start: cwd=%s", cwd)
 	}
 	skillDirs, agentsDirs := s.resourceDirsForWorkspace(cwd)
@@ -1083,7 +1291,7 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 		return nil, err
 	}
 	fileConfig := s.fileConfig()
-	policy, err := fileConfig.PolicyForWorkspace(cwd)
+	policy, err := fileConfig.PolicyForWorkspace(s.resourceRoot(cwd))
 	if err != nil {
 		return nil, err
 	}
@@ -1093,7 +1301,7 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 	if s.rt.RequestedSettings != nil {
 		runtimeSettings = *s.rt.RequestedSettings
 	}
-	runtimePath := sessionRuntimePath(s.rt.SessionsDir, acpAdapterType, id)
+	runtimePath := sessionRuntimePath(s.rt.SessionsDir, adapter, id)
 	restoredSession := false
 	if !s.rt.Incognito {
 		state, found, err := loadSessionRuntime(runtimePath)
@@ -1107,6 +1315,11 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 			restoredSession = true
 		}
 	}
+	if s.peer != nil {
+		if runtimeSettings, err = s.peer.modelSettings(fileConfig, runtimeSettings); err != nil {
+			return nil, err
+		}
+	}
 	runtimeSettings, notice, err := enforceSessionModel(fileConfig, policy, runtimeSettings, s.allowedModels, s.rt.ExplicitModelSource)
 	if err != nil {
 		return nil, err
@@ -1118,7 +1331,7 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 		switches = append(switches, notice)
 	}
 	s.logInfo("%s", modelSummary(runtimeSettings, modelSource(s.rt.ExplicitModelSource, restoredSession, runtimeSettings)))
-	s.logInfo("session %s adapter=%s workspace=%s", id, acpAdapterType, cwd)
+	s.logInfo("session %s adapter=%s workspace=%s", id, adapter, cwd)
 	notices := switches
 	if rule := modelRuleNotice(policy); rule != "" {
 		notices = append([]string{rule}, switches...)
@@ -1143,7 +1356,7 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 			Logf:                  s.rt.Logger.Info,
 		})
 	}
-	session, err := agent.NewAgentSession(acpAdapterType, id, agent.SessionParams{
+	session, err := agent.NewAgentSession(adapter, id, agent.SessionParams{
 		BaseDir:           s.rt.SessionsDir,
 		WorkspaceDir:      cwd,
 		Logger:            s.rt.Logger,
@@ -1193,6 +1406,12 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 		_ = session.Close()
 		return nil, fmt.Errorf("loop guard judge: %w", err)
 	}
+	if s.peer != nil {
+		if err := s.peer.configureSession(session); err != nil {
+			_ = session.Close()
+			return nil, fmt.Errorf("configure peer bot %s: %w", s.peer.def.Name, err)
+		}
+	}
 	acp := &acpSession{
 		id:              id,
 		modelNotices:    notices,
@@ -1231,9 +1450,155 @@ func (s *acpServer) attachACPStreaming(acp *acpSession) {
 			s.notifyProvisionalDelta(acp.id, delta)
 		}
 	})
+	acp.session.SetUnattendedAsyncTurnRunner(s.backgroundTurnRunner(acp))
+}
+
+// backgroundTurnRunner runs the turns the client did not prompt, such as one
+// a peer bot's reply starts. Each waits for any running prompt, is framed by
+// caretz/turn_started and caretz/turn_ended updates, which stand in for the
+// prompt response such a turn lacks, and stops on session/cancel when no
+// prompt is running. Nobody can answer a permission prompt, so it is denied.
+func (s *acpServer) backgroundTurnRunner(acp *acpSession) agent.AsyncTurnRunner {
+	return func(ctx context.Context, turn func(context.Context, <-chan struct{}) error) error {
+		if err := acp.acquireTurn(ctx); err != nil {
+			return err
+		}
+		defer acp.releaseTurn()
+		turnCtx, cancel := context.WithCancel(ctx)
+		background := &acpTurn{cancel: cancel, stop: make(chan struct{})}
+		acp.mu.Lock()
+		acp.background = background
+		acp.mu.Unlock()
+		defer func() {
+			background.stopNow()
+			acp.mu.Lock()
+			if acp.background == background {
+				acp.background = nil
+			}
+			acp.mu.Unlock()
+		}()
+
+		source := ""
+		if request, ok := sessiontools.AsyncRequestFromContext(ctx); ok {
+			source = request.Source
+		}
+		info := s.beginTurn(acp, source, nil)
+		err := turn(turnCtx, background.stop)
+		if err != nil {
+			s.notifyProvisionalClear(acp.id)
+		}
+		stopReason, errText := turnStopReason(err)
+		s.endTurn(acp, info, stopReason, errText)
+		return err
+	}
+}
+
+// acpTurnSourcePrompt is the source of a turn a session/prompt started.
+const acpTurnSourcePrompt = "prompt"
+
+// acpTurnInfo describes a session's running turn, prompted or not. Clients
+// see it as caretz/turn_started and caretz/turn_ended updates and as the
+// activeTurn of a session setup result.
+type acpTurnInfo struct {
+	id        string
+	source    string
+	startedAt time.Time
+	// promptRequestID is the JSON-RPC id of the session/prompt that started
+	// the turn; nil for a turn the client did not prompt.
+	promptRequestID json.RawMessage
+}
+
+func (t *acpTurnInfo) fields() map[string]any {
+	fields := map[string]any{"turnId": t.id, "startedAt": t.startedAt.UTC().Format(time.RFC3339)}
+	if t.source != "" {
+		fields["source"] = t.source
+	}
+	if len(t.promptRequestID) > 0 {
+		fields["promptRequestId"] = t.promptRequestID
+	}
+	return fields
+}
+
+// beginTurn records a session's running turn and announces it.
+func (s *acpServer) beginTurn(session *acpSession, source string, promptRequestID json.RawMessage) *acpTurnInfo {
+	info := &acpTurnInfo{id: uuid.NewV4().String(), source: source, startedAt: time.Now(), promptRequestID: promptRequestID}
+	session.mu.Lock()
+	session.turn = info
+	session.mu.Unlock()
+	s.notifyTurnUpdate(session.id, "caretz/turn_started", info.fields())
+	return info
+}
+
+// endTurn announces the end of info with the stopReason a prompt response
+// would carry: end_turn, cancelled, or error.
+func (s *acpServer) endTurn(session *acpSession, info *acpTurnInfo, stopReason, errText string) {
+	session.mu.Lock()
+	if session.turn == info {
+		session.turn = nil
+	}
+	session.mu.Unlock()
+	fields := info.fields()
+	fields["stopReason"] = stopReason
+	if errText != "" {
+		fields["error"] = errText
+	}
+	s.notifyTurnUpdate(session.id, "caretz/turn_ended", fields)
+}
+
+// activeTurn is the session's running turn for a setup result, or nil.
+func (s *acpSession) activeTurn() any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turn == nil {
+		return nil
+	}
+	return s.turn.fields()
+}
+
+func turnStopReason(err error) (string, string) {
+	switch {
+	case err == nil:
+		return "end_turn", ""
+	case agent.IsCleanStop(err) || errors.Is(err, context.Canceled):
+		return "cancelled", ""
+	default:
+		return "error", err.Error()
+	}
+}
+
+func (s *acpServer) notifyTurnUpdate(sessionID, kind string, fields map[string]any) {
+	update := map[string]any{"sessionUpdate": kind}
+	for key, value := range fields {
+		update[key] = value
+	}
+	// Turn boundaries carry no content, so a peer bot sends them even while
+	// no client has its session open: a supervisor such as a gateway uses
+	// them to tell whether the bot is busy.
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	s.notifyLocked("session/update", map[string]any{"sessionId": sessionID, "update": update})
+}
+
+// sessionAdapter is the adapter the server's sessions are stored under.
+func (s *acpServer) sessionAdapter() string {
+	if s.peer != nil {
+		return peerAdapter
+	}
+	return acpAdapterType
+}
+
+// resourceRoot is the workspace whose skills, agents, and model rules apply
+// to a session working in cwd. A confined bot works in its own directory but
+// belongs to the main workspace.
+func (s *acpServer) resourceRoot(cwd string) string {
+	if s.peer != nil {
+		return s.peer.mainDir
+	}
+	return cwd
 }
 
 func (s *acpServer) resourceDirsForWorkspace(cwd string) ([]string, []string) {
+	cwd = s.resourceRoot(cwd)
 	skillDirs := skillDirsForRuntime(s.rt.HomeSkillsDir, cwd, s.rt.ConfigRoot, s.rt.ConfigRootSupplied)
 	agentDirs := agentDirsForRuntime(s.rt.HomeAgentsDir, cwd, s.rt.ConfigRoot, s.rt.ConfigRootSupplied)
 	return skillDirs, agentDirs
@@ -1315,6 +1680,12 @@ func (s *acpServer) switchACPMode(session *acpSession, mode string) error {
 	}
 	if err := session.session.SwitchSessionRuntime(registry, systemPrompt); err != nil {
 		return err
+	}
+	if s.peer != nil {
+		// Keep the bot's prompt, disabled tools, and confinement.
+		if err := s.peer.configureSession(session.session); err != nil {
+			return err
+		}
 	}
 	slashCommandRegistry, err := s.newACPSlashCommandRegistry(session, agentsDirs)
 	if err != nil {
@@ -1497,6 +1868,25 @@ func (s *acpServer) registerSessionEvents(session *acpSession) error {
 		}); err != nil {
 			return err
 		}
+	}
+	// Turns the client did not prompt, such as one started by a peer bot's
+	// message, record their own user message; echo it so live output matches
+	// what session/load replays.
+	if err := session.session.OnAuditEvent(eventing.LogMessageUserCreated, func(e *types.Event) error {
+		message, err := eventing.DecodeLogMessage(e)
+		if err != nil || message.Content == "" || session.takeClientMessage(message.MessageID) {
+			return nil
+		}
+		s.notify("session/update", map[string]any{
+			"sessionId": session.id,
+			"update": map[string]any{
+				"sessionUpdate": "user_message_chunk",
+				"content":       acpUserContent(session.id, message),
+			},
+		})
+		return nil
+	}); err != nil {
+		return err
 	}
 	if err := session.session.OnContextEvent(eventing.LLMReasoningDeltaCreated, func(e *types.Event) error {
 		var p eventing.LLMReasoningDelta
@@ -1965,9 +2355,24 @@ func acpToolRawInput(args string) any {
 }
 
 func (s *acpServer) notify(method string, params any) {
+	if s.detachedSession(params) {
+		return
+	}
 	s.notifyMu.Lock()
 	defer s.notifyMu.Unlock()
 	s.notifyLocked(method, params)
+}
+
+// detachedSession reports whether params address a session no client has
+// open, whose updates the client must not receive.
+func (s *acpServer) detachedSession(params any) bool {
+	if s.peer == nil {
+		return false
+	}
+	values, _ := params.(map[string]any)
+	id, _ := values["sessionId"].(string)
+	session := s.getSession(id)
+	return session != nil && session.detached.Load()
 }
 
 func (s *acpServer) notifyLocked(method string, params any) {
@@ -1982,7 +2387,7 @@ func (s *acpServer) writeACPDebugLog(sessionID, format string, args ...any) {
 	if !s.acpDebugEnabled() || strings.TrimSpace(sessionID) == "" {
 		return
 	}
-	path := filepath.Join(s.rt.SessionsDir, acpAdapterType, sessionID, "debug.log")
+	path := filepath.Join(s.rt.SessionsDir, s.sessionAdapter(), sessionID, "debug.log")
 	writeACPDebugLogFile(path, format, args...)
 }
 
@@ -2281,18 +2686,35 @@ func acpUserContent(sessionID string, message eventing.LogMessage) map[string]an
 		text = message.Content
 	}
 	content := acpTextContent(text)
-	if len(message.Attachments) == 0 {
-		return content
+	meta := map[string]any{}
+	if origin := message.Origin; origin != nil {
+		// Clients show a message a peer bot or schedule started as that
+		// source's, not the user's.
+		described := map[string]any{"source": origin.Source}
+		if origin.SourceID != "" {
+			described["sourceId"] = origin.SourceID
+		}
+		for key, value := range origin.Fields {
+			if _, taken := described[key]; !taken && value != "" {
+				described[key] = value
+			}
+		}
+		meta["origin"] = described
 	}
-	items := make([]map[string]any, 0, len(message.Attachments))
-	for _, attachment := range message.Attachments {
-		items = append(items, map[string]any{
-			"id": attachment.ID, "kind": attachment.Kind, "name": attachment.Name,
-			"mimeType": attachment.MimeType, "size": attachment.Size, "sha256": attachment.SHA256,
-			"downloadPath": "sessions/" + sessionID + "/attachments/" + attachment.ID,
-		})
+	if len(message.Attachments) > 0 {
+		items := make([]map[string]any, 0, len(message.Attachments))
+		for _, attachment := range message.Attachments {
+			items = append(items, map[string]any{
+				"id": attachment.ID, "kind": attachment.Kind, "name": attachment.Name,
+				"mimeType": attachment.MimeType, "size": attachment.Size, "sha256": attachment.SHA256,
+				"downloadPath": "sessions/" + sessionID + "/attachments/" + attachment.ID,
+			})
+		}
+		meta["attachments"] = items
 	}
-	content["_meta"] = map[string]any{"caretz": map[string]any{"attachments": items}}
+	if len(meta) > 0 {
+		content["_meta"] = map[string]any{"caretz": meta}
+	}
 	return content
 }
 

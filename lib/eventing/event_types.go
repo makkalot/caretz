@@ -198,6 +198,31 @@ type LogMessage struct {
 	Adapter        string              `json:"adapter,omitempty"`
 	ChannelID      string              `json:"channel_id,omitempty"`
 	UserID         string              `json:"user_id,omitempty"`
+	// Origin is set on a user message that a background run recorded rather
+	// than a person, such as a peer bot's message. Content is what the model
+	// read; DisplayContent is the text clients show.
+	Origin *MessageOrigin `json:"origin,omitempty"`
+}
+
+// MessageOrigin says what started a user message no person typed: the async
+// run's source and source ID, plus source-specific display fields (for a peer
+// message: from, messageId, and for a reply inReplyTo and status).
+type MessageOrigin struct {
+	Source   string            `json:"source"`
+	SourceID string            `json:"source_id,omitempty"`
+	Fields   map[string]string `json:"fields,omitempty"`
+}
+
+// NewLogMessageWithOrigin records a user message a background run started.
+func NewLogMessageWithOrigin(originatorID, content, displayContent string, origin *MessageOrigin) *types.Event {
+	logMessage := LogMessage{
+		MessageID:      newMessageID(),
+		Content:        content,
+		DisplayContent: displayContent,
+		Origin:         origin,
+	}
+	payload, _ := json.Marshal(logMessage)
+	return types.NewEvent(types.NewOriginator(originatorID, 0), LogMessageUserCreated, string(payload))
 }
 
 // MessageAttachment is durable, client-safe metadata for an uploaded user

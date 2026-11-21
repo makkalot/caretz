@@ -66,7 +66,7 @@ func FindSessionDirWithAdapter(sessionsDir, sessionID, requestedAdapter string) 
 		return "", "", fmt.Errorf("session %s not found in adapter %s", sessionID, requestedAdapter)
 	}
 	var matches []string
-	for _, adapter := range []string{"cli", "tui", "slack", "telegram"} {
+	for _, adapter := range []string{"cli", "tui", "slack", "telegram", "peer"} {
 		dir := filepath.Join(sessionsDir, adapter, sessionID)
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			matches = append(matches, adapter)
