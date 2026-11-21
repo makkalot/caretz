@@ -1571,7 +1571,12 @@ func (s *acpServer) notifyTurnUpdate(sessionID, kind string, fields map[string]a
 	for key, value := range fields {
 		update[key] = value
 	}
-	s.notify("session/update", map[string]any{"sessionId": sessionID, "update": update})
+	// Turn boundaries carry no content, so a peer bot sends them even while
+	// no client has its session open: a supervisor such as a gateway uses
+	// them to tell whether the bot is busy.
+	s.notifyMu.Lock()
+	defer s.notifyMu.Unlock()
+	s.notifyLocked("session/update", map[string]any{"sessionId": sessionID, "update": update})
 }
 
 // sessionAdapter is the adapter the server's sessions are stored under.

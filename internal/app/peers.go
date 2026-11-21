@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -515,6 +517,23 @@ type PeerBotStatus struct {
 	PID     int
 	// Queued counts messages waiting in the bot's inbox.
 	Queued int
+	// Revision fingerprints the bot's definition file, so a supervisor can
+	// tell when it changed and the bot needs a restart to pick it up.
+	Revision string
+}
+
+// definitionRevision is the SHA-256 of a definition's file, or empty when it
+// cannot be read.
+func definitionRevision(def subagents.Definition) string {
+	if def.Path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(def.Path)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // peerStatuses reports the liveness and inbox depth of defs in workspace.
@@ -536,6 +555,7 @@ func peerStatuses(configRoot, workspace string, defs []subagents.Definition) ([]
 			Running:     running,
 			PID:         pid,
 			Queued:      runDir.PendingCount(endpoint),
+			Revision:    definitionRevision(def),
 		})
 	}
 	slices.SortFunc(statuses, func(a, b PeerBotStatus) int { return strings.Compare(a.Name, b.Name) })

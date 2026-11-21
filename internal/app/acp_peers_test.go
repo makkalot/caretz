@@ -397,12 +397,19 @@ func TestACPPeerServerRunsBotAndAttachesClientOnLoad(t *testing.T) {
 	lines := stop()
 
 	// The bot's turn ran before the client sent anything, so a live update
-	// leaked while detached would precede the first response.
+	// leaked while detached would precede the first response. Only the
+	// content-free turn boundaries are sent, so a supervisor sees it busy.
 	loaded := responseIndex(lines, 3)
+	detachedFrames := turnFrames(lines[:responseIndex(lines, 1)])
 	for _, line := range lines[:responseIndex(lines, 1)] {
-		if line["method"] == "session/update" {
+		params, _ := line["params"].(map[string]any)
+		update, _ := params["update"].(map[string]any)
+		if kind, _ := update["sessionUpdate"].(string); line["method"] == "session/update" && !strings.HasPrefix(kind, "caretz/turn_") {
 			t.Fatalf("detached bot sent a live update: %#v", line)
 		}
+	}
+	if len(detachedFrames) != 2 || detachedFrames[0].update["source"] != "peer" || detachedFrames[1].update["stopReason"] != "end_turn" {
+		t.Fatalf("detached bot turn frames = %+v, want one peer turn", detachedFrames)
 	}
 	if line := lines[responseIndex(lines, 1)]; line["error"] == nil {
 		t.Fatalf("session/new on a bot server = %#v, want an error", line)

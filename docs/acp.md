@@ -108,7 +108,10 @@ show and clear a busy state:
   `turn_ended` comes right before the prompt response.
 - `stopReason` is `end_turn`, `cancelled`, or `error` (with an `error` field).
 
-The updates are live only; history doesn't replay them. Instead, the results
+The updates are live only; history doesn't replay them. A [peer bot](peers.md)
+served with `caretz acp --peer` sends them even while no client has its
+session open, so whatever runs the bot can tell when it's busy; it sends no
+other updates until a client loads the session. Instead, the results
 of `session/new`, `session/load`, and `session/resume` carry `activeTurn`:
 `null` when nothing runs, or the running turn's `turnId`, `source`,
 `startedAt`, and `promptRequestId`. A client that opens a session mid-turn,

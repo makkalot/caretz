@@ -165,4 +165,13 @@ func (r *Runtime) PeerBots() ([]PeerBot, error) {
 	return r.inner.PeerBots()
 }
 
+// AgentsDirs lists the directories the runtime loads agent definitions from,
+// in precedence order. Watch them to notice added, removed, or edited bots.
+func (r *Runtime) AgentsDirs() []string {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	return append([]string(nil), r.inner.AgentsDirs...)
+}
+
 var _ acp.Runtime = (*Runtime)(nil)

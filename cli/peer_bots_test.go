@@ -7,6 +7,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/makkalot/caretz/cli"
@@ -71,5 +72,23 @@ func TestRuntimePeerBotsListsBotsWithState(t *testing.T) {
 	}
 	if writer.Name != "writer" || !writer.Running || writer.PID != os.Getpid() || writer.Queued != 1 {
 		t.Errorf("writer = %+v, want running in this process with 1 queued message", writer)
+	}
+	if dirs := runtime.AgentsDirs(); !slices.Contains(dirs, agents) {
+		t.Errorf("AgentsDirs() = %v, want it to include %s", dirs, agents)
+	}
+
+	// Editing a definition changes its revision; the other bot's stays.
+	if reviewer.Revision == "" || reviewer.Revision == writer.Revision {
+		t.Fatalf("revisions = %q / %q, want distinct non-empty", reviewer.Revision, writer.Revision)
+	}
+	if err := os.WriteFile(filepath.Join(agents, "reviewer.md"), []byte("---\ndescription: Reviews diffs\nmode: peer\n---\nReview harder."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edited, err := runtime.PeerBots()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited[0].Revision == reviewer.Revision || edited[1].Revision != writer.Revision {
+		t.Errorf("revisions after editing reviewer = %q / %q, was %q / %q", edited[0].Revision, edited[1].Revision, reviewer.Revision, writer.Revision)
 	}
 }
