@@ -442,13 +442,13 @@ func TestStartPeersFailsWithoutMultiplexer(t *testing.T) {
 	workspace, configRoot := writePeerWorkspace(t, confinedReviewer)
 	stubBotSpawner(t, nil)
 	_, err := prepareBotStart(peerRuntime(workspace, configRoot), []string{"--profile=work"})
-	if err == nil || !strings.Contains(err.Error(), "Herdr or tmux") || !strings.Contains(err.Error(), "\n  caretz peer reviewer --profile=work") {
+	if err == nil || !strings.Contains(err.Error(), "Herdr or tmux") || !strings.Contains(err.Error(), "\n  "+caretCommandName()+" peer reviewer --profile=work") {
 		t.Fatalf("err = %v", err)
 	}
 	// The check runs before any session is created.
 	var out, errOut strings.Builder
 	args := []string{"--workspace", workspace, "--config-root", configRoot, "--no-model-discovery", "--start-peers"}
-	if code := Run(context.Background(), args, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "caretz peer reviewer") {
+	if code := Run(context.Background(), args, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), caretCommandName()+" peer reviewer") {
 		t.Fatalf("exit = %d, stderr = %q", code, errOut.String())
 	}
 	if entries, _ := os.ReadDir(filepath.Join(configRoot, "sessions")); len(entries) != 0 {
@@ -527,7 +527,7 @@ func TestBotTabsFollowPeersLayout(t *testing.T) {
 func TestPeerResumeCommandKeepsFlags(t *testing.T) {
 	launch := &peerLaunch{def: subagents.Definition{Name: "reviewer"}, flags: []string{"--profile=foo", "--plan=true"}}
 	got := launch.resumeCommand()
-	if len(got) != 5 || got[0] != "caretz" || got[1] != peerAdapter || got[2] != "reviewer" || got[3] != "--profile=foo" || got[4] != "--plan=true" {
+	if len(got) != 5 || got[0] != caretCommandName() || got[1] != peerAdapter || got[2] != "reviewer" || got[3] != "--profile=foo" || got[4] != "--plan=true" {
 		t.Fatalf("resume command = %q", got)
 	}
 }

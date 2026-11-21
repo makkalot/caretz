@@ -175,7 +175,18 @@ func (l *peerLaunch) integration(rt *Runtime, logger *log.Logger) sessiontools.F
 // resumeCommand is how Herdr restores the bot's pane, with the same flags.
 // Herdr requires a plain command name here, not a path.
 func (l *peerLaunch) resumeCommand() []string {
-	return append([]string{"caretz", peerAdapter, l.def.Name}, l.flags...)
+	return append([]string{caretCommandName(), peerAdapter, l.def.Name}, l.flags...)
+}
+
+// caretCommandName is the running binary's base name, so a build installed
+// under another name (for example caretz-durable) restarts and suggests
+// itself rather than the default caretz on PATH.
+func caretCommandName() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return "caretz"
+	}
+	return filepath.Base(executable)
 }
 
 func caretExecutable() string {
@@ -306,7 +317,7 @@ func prepareBotStart(rt *Runtime, rootFlags []string) (*botStart, error) {
 		var b strings.Builder
 		b.WriteString("--start-peers needs Herdr or tmux to open the bots' panes. Start them in separate terminals instead:")
 		for _, def := range offline {
-			b.WriteString("\n  " + herdr.ShellQuote(botCommand("caretz", def, rootFlags, rt.ConfigRoot, rt.ConfigRootSupplied)))
+			b.WriteString("\n  " + herdr.ShellQuote(botCommand(caretCommandName(), def, rootFlags, rt.ConfigRoot, rt.ConfigRootSupplied)))
 		}
 		return nil, fmt.Errorf("%s", b.String())
 	}
