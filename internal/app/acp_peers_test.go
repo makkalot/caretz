@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -193,21 +194,94 @@ func TestACPSessionSendsAndReceivesPeerMessages(t *testing.T) {
 	assertHasAgentTextContaining(t, lines, "noted")
 	assertHasPromptStop(t, lines, "end_turn")
 
-	// Only the peer turn, which has no prompt response, is framed.
+	// Clients see the peer's message itself, tagged with who sent it, not
+	// the frame the model reads.
+	peerContent := updateContent(lines[peerChunks[0]])
+	if text := fmt.Sprint(peerContent["text"]); text != "please check spool.go" {
+		t.Fatalf("peer message text = %q, want the bare message", text)
+	}
+	meta, _ := peerContent["_meta"].(map[string]any)
+	caretzMeta, _ := meta["caretz"].(map[string]any)
+	origin, _ := caretzMeta["origin"].(map[string]any)
+	if origin["source"] != "peer" || origin["from"] != "reviewer" || origin["messageId"] == nil || origin["messageId"] != origin["sourceId"] {
+		t.Fatalf("peer message origin = %#v", origin)
+	}
+
+	// Each turn, prompted or not, is framed: the peer turn, then the prompt.
 	frames := turnFrames(lines)
-	if len(frames) != 2 || frames[0].kind != "caretz/turn_started" || frames[1].kind != "caretz/turn_ended" {
-		t.Fatalf("turn frames = %+v, want one started/ended pair", frames)
+	if len(frames) != 4 {
+		t.Fatalf("turn frames = %+v, want two started/ended pairs", frames)
+	}
+	for i, want := range []struct{ kind, source string }{
+		{"caretz/turn_started", "peer"}, {"caretz/turn_ended", "peer"},
+		{"caretz/turn_started", "prompt"}, {"caretz/turn_ended", "prompt"},
+	} {
+		if frames[i].kind != want.kind || frames[i].update["source"] != want.source || frames[i].update["startedAt"] == nil {
+			t.Fatalf("turn frame %d = %+v, want %s from %s", i, frames[i], want.kind, want.source)
+		}
 	}
 	started, ended := frames[0], frames[1]
-	if started.update["turnId"] == nil || started.update["turnId"] != ended.update["turnId"] || ended.update["source"] != "peer" || ended.update["stopReason"] != "end_turn" {
-		t.Fatalf("turn frames = %+v / %+v", started.update, ended.update)
+	if started.update["turnId"] == nil || started.update["turnId"] != ended.update["turnId"] || ended.update["stopReason"] != "end_turn" || started.update["promptRequestId"] != nil {
+		t.Fatalf("peer turn frames = %+v / %+v", started.update, ended.update)
 	}
 	if started.index > peerChunks[0] || ended.index < peerChunks[0] {
 		t.Fatalf("peer message (index %d) is outside its turn frame (%d..%d)", peerChunks[0], started.index, ended.index)
 	}
-	if prompt := userChunkIndexes(lines, "client prompt")[0]; prompt < ended.index {
+	prompt := userChunkIndexes(lines, "client prompt")[0]
+	if prompt < ended.index {
 		t.Fatalf("client prompt (index %d) streamed inside the peer turn (ended %d)", prompt, ended.index)
 	}
+	// The prompted turn starts after its user message, carries the prompt's
+	// request id, and ends just before the prompt response.
+	promptStarted, promptEnded := frames[2], frames[3]
+	if promptStarted.index < prompt || promptStarted.update["promptRequestId"] != float64(2) || promptEnded.update["stopReason"] != "end_turn" {
+		t.Fatalf("prompt turn frames = %+v / %+v (prompt at %d)", promptStarted, promptEnded, prompt)
+	}
+	if response := responseIndex(lines, 2); response != promptEnded.index+1 {
+		t.Fatalf("prompt response at %d, want right after turn_ended at %d", response, promptEnded.index)
+	}
+	created := lines[responseIndex(lines, 1)]["result"].(map[string]any)
+	if active, ok := created["activeTurn"]; !ok || active != nil {
+		t.Fatalf("session/new activeTurn = %#v (present %t), want null", active, ok)
+	}
+
+	// History replays the peer message with the same text and origin.
+	writer, stop = serveACPInBackground(t, rt)
+	writeRPC(t, writer, `{"jsonrpc":"2.0","id":3,"method":"session/load","params":{"sessionId":"s1","cwd":`+quoteJSON(workspace)+`}}`)
+	replayed := stop()
+	chunks := userChunkIndexes(replayed, "please check spool.go")
+	if len(chunks) != 1 {
+		t.Fatalf("replayed peer message %d times, want 1: %#v", len(chunks), replayed)
+	}
+	replayedContent := updateContent(replayed[chunks[0]])
+	replayedMeta, _ := replayedContent["_meta"].(map[string]any)
+	if fmt.Sprint(replayedContent["text"]) != "please check spool.go" || !reflect.DeepEqual(replayedMeta, meta) {
+		t.Fatalf("replayed peer message = %#v, want text and _meta %#v", replayedContent, meta)
+	}
+}
+
+func TestACPSessionSetupReportsActiveTurn(t *testing.T) {
+	session := &acpSession{id: "s1"}
+	if got := session.activeTurn(); got != nil {
+		t.Fatalf("idle activeTurn = %#v, want nil", got)
+	}
+	started := time.Date(2026, 11, 21, 10, 0, 0, 0, time.FixedZone("x", 3600))
+	session.turn = &acpTurnInfo{id: "t1", source: acpTurnSourcePrompt, startedAt: started, promptRequestID: json.RawMessage(`"018f1591"`)}
+	want := map[string]any{"turnId": "t1", "source": "prompt", "startedAt": "2026-11-21T09:00:00Z", "promptRequestId": json.RawMessage(`"018f1591"`)}
+	if got := session.activeTurn(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("activeTurn = %#v, want %#v", got, want)
+	}
+	session.turn = &acpTurnInfo{id: "t2", source: "peer", startedAt: started}
+	if got := session.activeTurn().(map[string]any); got["promptRequestId"] != nil || got["source"] != "peer" {
+		t.Fatalf("background activeTurn = %#v, want peer turn without promptRequestId", got)
+	}
+}
+
+func updateContent(line map[string]any) map[string]any {
+	params, _ := line["params"].(map[string]any)
+	update, _ := params["update"].(map[string]any)
+	content, _ := update["content"].(map[string]any)
+	return content
 }
 
 type turnFrame struct {

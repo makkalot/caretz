@@ -47,6 +47,12 @@ type AsyncRunRequest struct {
 	// PreviousRun describes how the previous run from the same source ended
 	// when it did not succeed, so this run can change course.
 	PreviousRun string `json:"previous_run,omitempty"`
+	// Display is the text clients show for a foreground run's user message
+	// instead of Prompt, which frames it for the model.
+	Display string `json:"display,omitempty"`
+	// OriginFields are source-specific details recorded with the foreground
+	// run's user message as its MessageOrigin fields.
+	OriginFields map[string]string `json:"origin_fields,omitempty"`
 }
 
 // ContextLimits override the token limits of the run's model. A zero field

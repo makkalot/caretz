@@ -986,7 +986,7 @@ func TestACPCancelWaitingPromptPersistsNothing(t *testing.T) {
 	ctx := progress.With(t.Context(), func(string) { close(waiting) })
 	done := make(chan *acpError, 1)
 	go func() {
-		_, err := server.handlePrompt(ctx, json.RawMessage(`{"sessionId":"waiting","message":"abandoned waiting prompt"}`))
+		_, err := server.handlePrompt(ctx, nil, json.RawMessage(`{"sessionId":"waiting","message":"abandoned waiting prompt"}`))
 		done <- err
 	}()
 	select {
@@ -1063,11 +1063,11 @@ func TestACPCancelStopsOnlyCurrentTurnOwnedWork(t *testing.T) {
 	defer func() { _ = session.session.Close() }()
 	server.sessions[session.id] = session
 	params := json.RawMessage(`{"sessionId":"owned","message":"launch background work"}`)
-	if _, rpcErr := server.handlePrompt(t.Context(), params); rpcErr != nil {
+	if _, rpcErr := server.handlePrompt(t.Context(), nil, params); rpcErr != nil {
 		t.Fatal(rpcErr)
 	}
 	done := make(chan *acpError, 1)
-	go func() { _, err := server.handlePrompt(t.Context(), params); done <- err }()
+	go func() { _, err := server.handlePrompt(t.Context(), nil, params); done <- err }()
 	select {
 	case <-provider.entered:
 	case <-time.After(time.Second):

@@ -92,19 +92,45 @@ refused. Write `modelRules` for the projects you open in the editor, or send
 
 A bot's reply, a schedule, or a finished background job can start a turn while
 you're idle. Its message and the agent's answer stream into the thread like a
-normal turn. Because no `session/prompt` response ends it, caretz brackets it
-with two extra updates that clients can use to show and clear a busy state:
+normal turn. No `session/prompt` response ends such a turn, so caretz brackets
+every turn, prompted or not, with two extra updates that clients can use to
+show and clear a busy state:
 
 ```text
-{"sessionUpdate":"caretz/turn_started","turnId":"…","source":"peer"}
-{"sessionUpdate":"caretz/turn_ended","turnId":"…","source":"peer","stopReason":"end_turn"}
+{"sessionUpdate":"caretz/turn_started","turnId":"…","source":"peer","startedAt":"2026-11-21T10:14:03Z"}
+{"sessionUpdate":"caretz/turn_ended","turnId":"…","source":"peer","startedAt":"…","stopReason":"end_turn"}
 ```
 
-`stopReason` is `end_turn`, `cancelled`, or `error` (with an `error` field).
-Such a turn waits for any running prompt, and a prompt sent during one waits
-for it. When no prompt is running, the editor's stop action cancels it.
-Nobody can approve anything during it, so a command that needs approval is
-refused.
+- `source` is `prompt` for a turn a `session/prompt` started, otherwise what
+  started it, such as `peer` or `schedule`. A prompted turn also carries
+  `promptRequestId`, the JSON-RPC id of its `session/prompt`.
+- `turn_started` follows the turn's user message. For a prompt,
+  `turn_ended` comes right before the prompt response.
+- `stopReason` is `end_turn`, `cancelled`, or `error` (with an `error` field).
+
+The updates are live only; history doesn't replay them. Instead, the results
+of `session/new`, `session/load`, and `session/resume` carry `activeTurn`:
+`null` when nothing runs, or the running turn's `turnId`, `source`,
+`startedAt`, and `promptRequestId`. A client that opens a session mid-turn,
+for example after a restart, can show it busy and match the prompt response
+by `promptRequestId`.
+
+The message that starts a turn nobody typed shows the text meant for people,
+and its `_meta.caretz.origin` says where it came from, live and in history:
+
+```text
+{"type":"text","text":"Found two issues in spool.go…","_meta":{"caretz":{"origin":
+  {"source":"peer","sourceId":"<message id>","from":"reviewer","messageId":"<message id>",
+   "inReplyTo":"<your message id>","status":"succeeded"}}}}
+```
+
+`inReplyTo` and `status` appear only on a reply. The model still reads the
+message with its framing.
+
+A turn you didn't start waits for any running prompt, and a prompt sent
+during one waits for it. When no prompt is running, the editor's stop action
+cancels it. Nobody can approve anything during it, so a command that needs
+approval is refused.
 
 ## When It Doesn't Work
 

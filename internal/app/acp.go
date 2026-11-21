@@ -104,6 +104,8 @@ type acpSession struct {
 	// prompt's. background is the running turn the client did not prompt.
 	turnGate   chan struct{}
 	background *acpTurn
+	// turn describes the running turn, prompted or not, for activeTurn.
+	turn *acpTurnInfo
 	// detached is set while no client has the session open, which only a
 	// peer bot's session can be. Its live updates are dropped meanwhile;
 	// session/load replays them from history.
@@ -526,7 +528,7 @@ func (s *acpServer) handle(ctx context.Context, req acpRequest) (any, *acpError)
 	case "session/load", "session/resume":
 		return s.handleSessionLoad(req.Method, req.Params)
 	case "session/prompt":
-		return s.handlePrompt(ctx, req.Params)
+		return s.handlePrompt(ctx, req.ID, req.Params)
 	case "session/cancel":
 		return s.handleCancel(req.Params)
 	case "session/close":
@@ -759,7 +761,7 @@ func (s *acpServer) enablePeerMessaging(session *acpSession) {
 	}
 }
 
-func (s *acpServer) handlePrompt(ctx context.Context, params json.RawMessage) (any, *acpError) {
+func (s *acpServer) handlePrompt(ctx context.Context, requestID json.RawMessage, params json.RawMessage) (result any, rpcErr *acpError) {
 	var p acpPromptParams
 	if err := decodeParams(params, &p); err != nil {
 		return nil, invalidParams(err)
@@ -817,6 +819,23 @@ func (s *acpServer) handlePrompt(ctx context.Context, params json.RawMessage) (a
 			session.takeClientMessage(message.MessageID)
 		}
 	}()
+	// The turn starts once its user message is echoed and ends just before
+	// the prompt response, so every observer sees the same boundaries.
+	var turnInfo *acpTurnInfo
+	defer func() {
+		if turnInfo == nil {
+			return
+		}
+		stopReason, errText := "error", ""
+		if rpcErr != nil {
+			errText = rpcErr.Message
+		} else if values, ok := result.(map[string]any); ok {
+			if reason, ok := values["stopReason"].(string); ok {
+				stopReason = reason
+			}
+		}
+		s.endTurn(session, turnInfo, stopReason, errText)
+	}()
 	accepted := func() {
 		committed = true
 		message, _ := eventing.DecodeLogMessage(userEvent)
@@ -827,6 +846,7 @@ func (s *acpServer) handlePrompt(ctx context.Context, params json.RawMessage) (a
 				"content":       acpUserContent(session.id, message),
 			},
 		})
+		turnInfo = s.beginTurn(session, acpTurnSourcePrompt, requestID)
 	}
 	if session.slashCommands.HandlesSessionInput(session.session, prompt) {
 		if err := session.session.AppendAuditEvent(userEvent); err != nil {
@@ -1023,7 +1043,9 @@ func (s *acpServer) handleSetConfigOption(ctx context.Context, params json.RawMe
 }
 
 func (s *acpServer) sessionSetupResult(session *acpSession) map[string]any {
-	result := map[string]any{"sessionId": session.id}
+	// activeTurn is null when no turn runs; otherwise the client can show the
+	// session busy and match the prompt response by promptRequestId.
+	result := map[string]any{"sessionId": session.id, "activeTurn": session.activeTurn()}
 	if options := s.configOptionsForSession(session); len(options) > 0 {
 		result["configOptions"] = options
 	}
@@ -1456,37 +1478,98 @@ func (s *acpServer) backgroundTurnRunner(acp *acpSession) agent.AsyncTurnRunner 
 			acp.mu.Unlock()
 		}()
 
-		frame := map[string]any{"turnId": uuid.NewV4().String()}
-		if request, ok := sessiontools.AsyncRequestFromContext(ctx); ok && request.Source != "" {
-			frame["source"] = request.Source
+		source := ""
+		if request, ok := sessiontools.AsyncRequestFromContext(ctx); ok {
+			source = request.Source
 		}
-		s.notifyTurnFrame(acp.id, "caretz/turn_started", frame, nil)
+		info := s.beginTurn(acp, source, nil)
 		err := turn(turnCtx, background.stop)
 		if err != nil {
 			s.notifyProvisionalClear(acp.id)
 		}
-		s.notifyTurnFrame(acp.id, "caretz/turn_ended", frame, err)
+		stopReason, errText := turnStopReason(err)
+		s.endTurn(acp, info, stopReason, errText)
 		return err
 	}
 }
 
-// notifyTurnFrame sends a turn boundary. A turn_ended update carries the
-// stopReason a prompt response would: end_turn, cancelled, or error.
-func (s *acpServer) notifyTurnFrame(sessionID, kind string, frame map[string]any, err error) {
-	update := map[string]any{"sessionUpdate": kind}
-	for key, value := range frame {
-		update[key] = value
+// acpTurnSourcePrompt is the source of a turn a session/prompt started.
+const acpTurnSourcePrompt = "prompt"
+
+// acpTurnInfo describes a session's running turn, prompted or not. Clients
+// see it as caretz/turn_started and caretz/turn_ended updates and as the
+// activeTurn of a session setup result.
+type acpTurnInfo struct {
+	id        string
+	source    string
+	startedAt time.Time
+	// promptRequestID is the JSON-RPC id of the session/prompt that started
+	// the turn; nil for a turn the client did not prompt.
+	promptRequestID json.RawMessage
+}
+
+func (t *acpTurnInfo) fields() map[string]any {
+	fields := map[string]any{"turnId": t.id, "startedAt": t.startedAt.UTC().Format(time.RFC3339)}
+	if t.source != "" {
+		fields["source"] = t.source
 	}
-	if kind == "caretz/turn_ended" {
-		switch {
-		case err == nil:
-			update["stopReason"] = "end_turn"
-		case agent.IsCleanStop(err) || errors.Is(err, context.Canceled):
-			update["stopReason"] = "cancelled"
-		default:
-			update["stopReason"] = "error"
-			update["error"] = err.Error()
-		}
+	if len(t.promptRequestID) > 0 {
+		fields["promptRequestId"] = t.promptRequestID
+	}
+	return fields
+}
+
+// beginTurn records a session's running turn and announces it.
+func (s *acpServer) beginTurn(session *acpSession, source string, promptRequestID json.RawMessage) *acpTurnInfo {
+	info := &acpTurnInfo{id: uuid.NewV4().String(), source: source, startedAt: time.Now(), promptRequestID: promptRequestID}
+	session.mu.Lock()
+	session.turn = info
+	session.mu.Unlock()
+	s.notifyTurnUpdate(session.id, "caretz/turn_started", info.fields())
+	return info
+}
+
+// endTurn announces the end of info with the stopReason a prompt response
+// would carry: end_turn, cancelled, or error.
+func (s *acpServer) endTurn(session *acpSession, info *acpTurnInfo, stopReason, errText string) {
+	session.mu.Lock()
+	if session.turn == info {
+		session.turn = nil
+	}
+	session.mu.Unlock()
+	fields := info.fields()
+	fields["stopReason"] = stopReason
+	if errText != "" {
+		fields["error"] = errText
+	}
+	s.notifyTurnUpdate(session.id, "caretz/turn_ended", fields)
+}
+
+// activeTurn is the session's running turn for a setup result, or nil.
+func (s *acpSession) activeTurn() any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turn == nil {
+		return nil
+	}
+	return s.turn.fields()
+}
+
+func turnStopReason(err error) (string, string) {
+	switch {
+	case err == nil:
+		return "end_turn", ""
+	case agent.IsCleanStop(err) || errors.Is(err, context.Canceled):
+		return "cancelled", ""
+	default:
+		return "error", err.Error()
+	}
+}
+
+func (s *acpServer) notifyTurnUpdate(sessionID, kind string, fields map[string]any) {
+	update := map[string]any{"sessionUpdate": kind}
+	for key, value := range fields {
+		update[key] = value
 	}
 	s.notify("session/update", map[string]any{"sessionId": sessionID, "update": update})
 }
@@ -2598,18 +2681,35 @@ func acpUserContent(sessionID string, message eventing.LogMessage) map[string]an
 		text = message.Content
 	}
 	content := acpTextContent(text)
-	if len(message.Attachments) == 0 {
-		return content
+	meta := map[string]any{}
+	if origin := message.Origin; origin != nil {
+		// Clients show a message a peer bot or schedule started as that
+		// source's, not the user's.
+		described := map[string]any{"source": origin.Source}
+		if origin.SourceID != "" {
+			described["sourceId"] = origin.SourceID
+		}
+		for key, value := range origin.Fields {
+			if _, taken := described[key]; !taken && value != "" {
+				described[key] = value
+			}
+		}
+		meta["origin"] = described
 	}
-	items := make([]map[string]any, 0, len(message.Attachments))
-	for _, attachment := range message.Attachments {
-		items = append(items, map[string]any{
-			"id": attachment.ID, "kind": attachment.Kind, "name": attachment.Name,
-			"mimeType": attachment.MimeType, "size": attachment.Size, "sha256": attachment.SHA256,
-			"downloadPath": "sessions/" + sessionID + "/attachments/" + attachment.ID,
-		})
+	if len(message.Attachments) > 0 {
+		items := make([]map[string]any, 0, len(message.Attachments))
+		for _, attachment := range message.Attachments {
+			items = append(items, map[string]any{
+				"id": attachment.ID, "kind": attachment.Kind, "name": attachment.Name,
+				"mimeType": attachment.MimeType, "size": attachment.Size, "sha256": attachment.SHA256,
+				"downloadPath": "sessions/" + sessionID + "/attachments/" + attachment.ID,
+			})
+		}
+		meta["attachments"] = items
 	}
-	content["_meta"] = map[string]any{"caretz": map[string]any{"attachments": items}}
+	if len(meta) > 0 {
+		content["_meta"] = map[string]any{"caretz": meta}
+	}
 	return content
 }
 

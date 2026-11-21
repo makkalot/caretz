@@ -434,6 +434,15 @@ func (a *AgentSession) callUntilStopUnlocked(ctx context.Context, prompt string,
 		return nil, err
 	}
 	e := eventing.NewLogMessage(a.channelId, prompt)
+	// A background run records where its message came from, so clients can
+	// show it as that source's message rather than the user's.
+	if request, ok := sessiontools.AsyncRequestFromContext(ctx); ok && request.Source != "" {
+		e = eventing.NewLogMessageWithOrigin(a.channelId, prompt, request.Display, &eventing.MessageOrigin{
+			Source:   request.Source,
+			SourceID: request.SourceID,
+			Fields:   request.OriginFields,
+		})
+	}
 
 	if err := a.eventSessionStore.Append(e); err != nil {
 		return nil, fmt.Errorf("failed to append event to event session store: %w", err)

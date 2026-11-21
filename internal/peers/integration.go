@@ -373,6 +373,10 @@ func (i *integration) requestTurn(record eventing.PeerMessageReceivedPayload) er
 		Prompt:    framePrompt(record),
 		Mode:      eventing.AsyncRunForeground,
 		Timeout:   i.cfg.RunTimeout,
+		// Clients show the message itself, tagged with who sent it, rather
+		// than the frame the model reads.
+		Display:      record.Content,
+		OriginFields: originFields(record),
 	}
 	event := eventing.NewAsyncRunRequested(i.gateway.ChannelID(), request)
 	if err := i.gateway.PublishAsyncEvent(context.Background(), event); err != nil {
@@ -575,6 +579,17 @@ func accepts(allowed []string, label string) bool {
 		}
 	}
 	return false
+}
+
+// originFields describe a peer message for clients: who sent it and, for a
+// reply, which message it answers and how that request ended.
+func originFields(record eventing.PeerMessageReceivedPayload) map[string]string {
+	fields := map[string]string{"from": record.FromLabel, "messageId": record.MessageID}
+	if record.InReplyTo != "" {
+		fields["inReplyTo"] = record.InReplyTo
+		fields["status"] = record.Status
+	}
+	return fields
 }
 
 func framePrompt(record eventing.PeerMessageReceivedPayload) string {
