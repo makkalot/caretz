@@ -167,7 +167,7 @@ func (e *Env) RunUntilKilled(trigger <-chan struct{}, args ...string) *Result {
 	select {
 	case <-trigger:
 		_ = cmd.Process.Kill()
-		<-exited
+		<-exited //nolint:errcheck // killed on purpose; the exit error is expected
 		res.Stdout, res.Stderr, res.ExitCode, res.Killed = stdout.String(), stderr.String(), -1, true
 		return res
 	case err := <-exited:
@@ -175,7 +175,7 @@ func (e *Env) RunUntilKilled(trigger <-chan struct{}, args ...string) *Result {
 		e.t.Fatalf("caretz exited (%v) before it could be killed\n%s", err, res.Dump())
 	case <-timeout.C:
 		_ = cmd.Process.Kill()
-		<-exited
+		<-exited //nolint:errcheck // killed on timeout; the exit error is expected
 		res.Stdout, res.Stderr = stdout.String(), stderr.String()
 		e.t.Fatalf("caretz never reached the point to kill it within %s\n%s", DefaultTimeout, res.Dump())
 	}
