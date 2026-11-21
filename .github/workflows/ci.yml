@@ -99,6 +99,43 @@ jobs:
           CARETZ_RUN_SANDBOX_INTEGRATION: "1"
         run: go test ./internal/sandbox -count=1 -v
 
+  e2e:
+    name: E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Install bubblewrap
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
+      # which bubblewrap needs.
+      - name: Allow unprivileged user namespaces
+        if: runner.os == 'Linux'
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      # Runs the real binary against the scripted fake LLM server and checks
+      # e2e/features/*.feature are in sync with the story tests.
+      - name: Run e2e tests
+        run: make test-e2e
+
   macos-sandbox:
     name: macOS sandbox
     runs-on: macos-latest
