@@ -376,7 +376,7 @@ func (s *Session) ensureStarted(cwd string) error {
 	}
 	if s.cmd != nil {
 		select {
-		case <-s.waitDone:
+		case <-s.waitDone: //nolint:errcheck // process already exited; only the wakeup matters here
 			if s.cleanup != nil {
 				s.cleanup()
 				s.cleanup = nil
@@ -476,7 +476,7 @@ func (s *Session) stopLocked() error {
 			if err := syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL); err != nil {
 				_ = s.cmd.Process.Kill()
 			}
-			<-s.waitDone
+			<-s.waitDone //nolint:errcheck // we just SIGKILLed it; the exit error is expected
 		}
 	}
 	if s.cleanup != nil {

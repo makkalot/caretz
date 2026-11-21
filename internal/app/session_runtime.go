@@ -105,6 +105,7 @@ func settingsForSessionRuntime(fileConfig config.Config, fallback runtimeSetting
 	} else {
 		settings.Model = state.Model
 		settings.ActiveModelRef = ""
+		settings.Params = nil
 	}
 	settings.ReasoningEffort = state.ReasoningEffort
 	settings.LLMTimeout = fallback.LLMTimeout

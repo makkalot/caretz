@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/makkalot/caretz/internal/loopguard"
 	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/internal/tools"
+	"github.com/makkalot/caretz/lib/llm"
 )
 
 const ProjectConfigPath = ".caretz/config.json"
@@ -193,6 +195,9 @@ type Model struct {
 	Reasoning       string   `json:"reasoning"`
 	ReasoningValues []string `json:"reasoningValues"`
 	Limit           Limit    `json:"limit"`
+	// Params are extra top-level request fields sent with every request to
+	// this model, such as temperature or a server-specific option.
+	Params map[string]json.RawMessage `json:"params,omitempty"`
 }
 
 type Limit struct {
@@ -208,6 +213,7 @@ type Resolved struct {
 	Model            string
 	Protocol         string
 	ReasoningEffort  string
+	Params           map[string]json.RawMessage
 	ContextWindow    int
 	ReservedTokens   int
 	KeepRecentTokens int
@@ -704,6 +710,7 @@ func (c Config) resolveProviderModel(providerKey, modelKey, displayRef string) (
 		APIKey:          c.ProviderAPIKey(providerKey),
 		Protocol:        strings.TrimSpace(model.Protocol),
 		ReasoningEffort: strings.TrimSpace(model.Reasoning),
+		Params:          model.Params,
 	}
 	if provider.Options.BaseURL != nil {
 		out.BaseURL = *provider.Options.BaseURL
@@ -731,7 +738,7 @@ func findProviderModel(provider Provider, modelKey string) (string, Model, bool,
 	if model, ok := provider.Models[modelKey]; ok {
 		return modelKey, model, true, nil
 	}
-	var matchedKey string
+	var matchedKeys []string
 	var matched Model
 	for key, model := range provider.Models {
 		effective := model.Model
@@ -741,12 +748,17 @@ func findProviderModel(provider Provider, modelKey string) (string, Model, bool,
 		if effective != modelKey {
 			continue
 		}
-		if matchedKey != "" {
-			return "", Model{}, false, fmt.Errorf("model ID %q is configured by multiple aliases", modelKey)
-		}
-		matchedKey, matched = key, model
+		matchedKeys = append(matchedKeys, key)
+		matched = model
 	}
-	return matchedKey, matched, matchedKey != "", nil
+	switch len(matchedKeys) {
+	case 0:
+		return "", Model{}, false, nil
+	case 1:
+		return matchedKeys[0], matched, true, nil
+	}
+	sort.Strings(matchedKeys)
+	return "", Model{}, false, fmt.Errorf("model ID %q is configured by multiple aliases (%s); name one of them, or add a model entry keyed %q for the plain model", modelKey, strings.Join(matchedKeys, ", "), modelKey)
 }
 
 func providerHasEffectiveModel(provider Provider, modelID string) bool {
@@ -1035,6 +1047,9 @@ func mergeModel(base, override Model) Model {
 	if override.ReasoningValues != nil {
 		base.ReasoningValues = append([]string(nil), override.ReasoningValues...)
 	}
+	if override.Params != nil {
+		base.Params = maps.Clone(override.Params)
+	}
 	if override.Limit.Context != nil {
 		base.Limit.Context = override.Limit.Context
 	}
@@ -1119,6 +1134,30 @@ func validate(cfg Config) error {
 					return fmt.Errorf("config provider %q model %q reasoningValues must not contain empty values", providerKey, modelKey)
 				}
 			}
+			if err := validateModelParams(model.Params, providerKey, modelKey); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateModelParams rejects params caretz builds itself. Reasoning effort
+// has its own "reasoning" setting so --reasoning and /models still override it.
+func validateModelParams(params map[string]json.RawMessage, providerKey, modelKey string) error {
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		switch {
+		case strings.TrimSpace(key) == "":
+			return fmt.Errorf("config provider %q model %q params must not contain an empty key", providerKey, modelKey)
+		case key == "reasoning" || key == "reasoning_effort":
+			return fmt.Errorf("config provider %q model %q params.%s is not allowed; set the model's \"reasoning\" field instead", providerKey, modelKey, key)
+		case llm.IsReservedRequestParam(key):
+			return fmt.Errorf("config provider %q model %q params.%s is not allowed; caretz sets it for every request", providerKey, modelKey, key)
 		}
 	}
 	return nil

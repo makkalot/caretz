@@ -504,6 +504,9 @@ func subagentActivityFor(name string, eventType string, raw []byte) ([]subagentA
 }
 
 func RegisterSubagentProgressHandlers(parent, child *AgentSession, name string) error {
+	publish := func(line subagentActivity) error {
+		return parent.PublishAuditEvent(eventing.NewSubagentInvocationProgress(parent.ChannelID(), name, child.ChannelID(), parent.ChannelID(), line.message, line.usage, line.cumulativeTotal, child.EstimatedContextTokens(), child.ContextWindow()))
+	}
 	for _, eventType := range subagentActivityEvents {
 		if err := child.OnContextEvent(eventType, func(e *types.Event) error {
 			lines, err := subagentActivityFor(name, e.EventType, []byte(e.Payload))
@@ -511,7 +514,7 @@ func RegisterSubagentProgressHandlers(parent, child *AgentSession, name string) 
 				return err
 			}
 			for _, line := range lines {
-				if err := parent.PublishAuditEvent(eventing.NewSubagentInvocationProgress(parent.ChannelID(), name, child.ChannelID(), parent.ChannelID(), line.message, line.usage, line.cumulativeTotal, child.EstimatedContextTokens(), child.ContextWindow())); err != nil {
+				if err := publish(line); err != nil {
 					return err
 				}
 			}
@@ -520,7 +523,54 @@ func RegisterSubagentProgressHandlers(parent, child *AgentSession, name string) 
 			return err
 		}
 	}
+	// The child's loop guard reports on its own audit log, which the
+	// parent's output never sees, so forward its notices and verdicts.
+	for _, eventType := range []string{eventing.StatusUpdated, LoopGuardJudgedEvent} {
+		if err := child.OnAuditEvent(eventType, func(e *types.Event) error {
+			line, ok, err := subagentLoopGuardActivity(name, e.EventType, []byte(e.Payload))
+			if err != nil || !ok {
+				return err
+			}
+			return publish(line)
+		}); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// subagentLoopGuardActivity describes a child's loop-guard notice or verdict
+// as one "subagent <name> loop-guard: ..." line. Other statuses produce none.
+func subagentLoopGuardActivity(name, eventType string, raw []byte) (subagentActivity, bool, error) {
+	prefix := fmt.Sprintf("subagent %s %s: ", name, loopGuardSource)
+	switch eventType {
+	case eventing.StatusUpdated:
+		var status eventing.Status
+		if err := json.Unmarshal(raw, &status); err != nil {
+			return subagentActivity{}, false, err
+		}
+		if status.Source != loopGuardSource {
+			return subagentActivity{}, false, nil
+		}
+		return subagentActivity{message: prefix + previewLine(status.Message, 180)}, true, nil
+	case LoopGuardJudgedEvent:
+		var record LoopGuardJudged
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return subagentActivity{}, false, err
+		}
+		message := prefix + previewLine(record.Outcome(), 180)
+		if reason := strings.TrimSpace(record.Verdict.Reason); record.Error == "" && record.Verdict.Stuck && reason != "" {
+			message += " · " + previewLine(reason, 160)
+		}
+		return subagentActivity{message: message}, true, nil
+	}
+	return subagentActivity{}, false, nil
+}
+
+// SubagentLoopGuardProgress returns the loop-guard text of a subagent
+// progress message, if it is one.
+func SubagentLoopGuardProgress(name, message string) (string, bool) {
+	return strings.CutPrefix(message, fmt.Sprintf("subagent %s %s: ", name, loopGuardSource))
 }
 
 func BuildSubagentPrompt(def subagents.Definition, task, parentSessionID string) string {

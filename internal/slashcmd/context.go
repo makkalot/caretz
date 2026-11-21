@@ -25,12 +25,13 @@ func (c ContextCommand) Run(ctx context.Context, session *agent.AgentSession, ar
 	}
 
 	return Result{Message: fmt.Sprintf(
-		"model: %s, profile: %s, context: %d/%d tokens, reserved: %d, messages: %d",
+		"model: %s, profile: %s, context: %d/%d tokens, reserved: %d, messages: %d, compactions: %d",
 		session.Model(),
 		c.Profile,
 		session.EstimatedContextTokens(),
 		session.ContextWindow(),
 		session.ReservedTokens(),
 		session.ActiveMessageCount(),
+		session.CompactionCount(),
 	)}, nil
 }

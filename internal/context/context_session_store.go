@@ -3,6 +3,7 @@ package context
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/makkalot/caretz/internal/tasks"
@@ -300,6 +301,27 @@ func (c *ContextSessionStore) GetSummaryEvents(channelID string) ([]*types.Event
 	}
 
 	return summaryEvents, nil
+}
+
+// CompactionCount returns how many compactions the session has completed,
+// counted from the persisted summary responses so it survives resume. Blank
+// summaries are skipped, matching how compaction itself ignores them.
+func (c *ContextSessionStore) CompactionCount(channelID string) (int, error) {
+	summaryEvents, err := c.GetSummaryEvents(channelID)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, event := range summaryEvents {
+		msg, err := eventing.EventToLLMMessage(event)
+		if err != nil {
+			return 0, err
+		}
+		if strings.TrimSpace(msg.Content) != "" {
+			count++
+		}
+	}
+	return count, nil
 }
 
 func (c *ContextSessionStore) RestoreTaskState(channelID string) (*tasks.State, int, error) {

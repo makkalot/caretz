@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -203,6 +204,52 @@ func TestResolveRuntimeSettings_LLMTimeoutAndAttemptsDefaults(t *testing.T) {
 	}
 	if settings.LLMMaxAttempts != llm.DefaultMaxAttempts {
 		t.Fatalf("LLMMaxAttempts = %d, want %d", settings.LLMMaxAttempts, llm.DefaultMaxAttempts)
+	}
+}
+
+func TestResolveRuntimeSettings_ParamsFollowTheConfiguredModel(t *testing.T) {
+	cfg := config.Config{
+		ActiveModel: "local/qwen-chat",
+		Provider: map[string]config.Provider{
+			"local": {
+				Options: config.ProviderOptions{BaseURL: stringPtr("http://localhost:8000/v1")},
+				Models: map[string]config.Model{
+					"qwen-chat": {Model: "qwen", Params: map[string]json.RawMessage{"temperature": json.RawMessage(`0.7`)}},
+					"qwen-code": {Model: "qwen"},
+				},
+			},
+		},
+	}
+
+	settings, err := resolveRuntimeSettings(cfg, runtimeFlagValues{}, mapGetenv(nil))
+	if err != nil {
+		t.Fatalf("resolveRuntimeSettings() error = %v", err)
+	}
+	if string(settings.Params["temperature"]) != "0.7" {
+		t.Fatalf("activeModel params = %v, want temperature 0.7", settings.Params)
+	}
+	if summary := modelSummary(settings, ""); !strings.Contains(summary, " params=temperature") {
+		t.Fatalf("modelSummary() = %q, want params listed", summary)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		flags  runtimeFlagValues
+		getenv func(string) string
+	}{
+		{"alias without params", runtimeFlagValues{Model: "local/qwen-code"}, mapGetenv(nil)},
+		{"raw --model", runtimeFlagValues{Model: "qwen"}, mapGetenv(nil)},
+		{"OPENAI_API_MODEL", runtimeFlagValues{}, mapGetenv(map[string]string{"OPENAI_API_MODEL": "qwen"})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings, err := resolveRuntimeSettings(cfg, tc.flags, tc.getenv)
+			if err != nil {
+				t.Fatalf("resolveRuntimeSettings() error = %v", err)
+			}
+			if settings.Params != nil {
+				t.Fatalf("Params = %v, want none once the model changes", settings.Params)
+			}
+		})
 	}
 }
 

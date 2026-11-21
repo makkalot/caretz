@@ -220,6 +220,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 			Model:            runtimeConfig.Model,
 			Protocol:         runtimeConfig.Protocol,
 			ReasoningEffort:  runtimeConfig.ReasoningEffort,
+			Params:           runtimeConfig.Params,
 			ContextWindow:    runtimeConfig.ContextWindow,
 			ReservedTokens:   runtimeConfig.ReservedTokens,
 			KeepRecentTokens: runtimeConfig.KeepRecentTokens,
@@ -294,6 +295,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 			DisableRequestTimeout: runtimeConfig.LLMTimeout == 0,
 			MaxAttempts:           runtimeConfig.LLMMaxAttempts,
 			ReasoningEffort:       settings.ReasoningEffort,
+			Params:                settings.Params,
 			Protocol:              settings.Protocol,
 			Logf:                  logger.Info,
 		})
@@ -314,7 +316,7 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		if err := config.SaveProjectActiveModel(projectConfigPath, ref); err != nil {
 			return slashcmd.ModelSwitchResult{}, fmt.Errorf("failed to save active model %q: %w", ref, err)
 		}
-		return slashcmd.ModelSwitchResult{Ref: ref, Model: settings.Model, ReasoningEffort: settings.ReasoningEffort}, nil
+		return slashcmd.ModelSwitchResult{Ref: ref, Model: settings.Model, ReasoningEffort: settings.ReasoningEffort, Params: paramNames(settings.Params)}, nil
 	}
 	if !rt.ModelRuleAnswered {
 		rt.StartupResources.ModelRule = modelRuleSummary(rt.ModelPolicy)
