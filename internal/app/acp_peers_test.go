@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/makkalot/caretz/internal/peers"
+	"github.com/makkalot/caretz/internal/schedules"
 	"github.com/makkalot/caretz/lib/eventing"
 	"github.com/makkalot/caretz/lib/llm"
 )
@@ -382,6 +383,9 @@ func TestACPPeerServerRunsBotAndAttachesClientOnLoad(t *testing.T) {
 	}
 	runDir.Poke(request.To)
 	provider.waitForPrompt(t, "review internal/peers")
+	if !provider.offered("RegisterSchedule") {
+		t.Fatal("a bot served over ACP was not offered schedules")
+	}
 	reply := waitForReply(t, runDir, root, request.ID)
 	if reply.Content != "noted" || reply.Status != "succeeded" {
 		t.Fatalf("reply = %+v", reply)
@@ -433,6 +437,66 @@ func TestACPPeerServerRunsBotAndAttachesClientOnLoad(t *testing.T) {
 	}
 	if !session.detached.Load() {
 		t.Fatal("session/close did not detach the client")
+	}
+}
+
+// A bot owns schedules: one fires while no client is attached, and its result
+// arrives as a turn the client can tell came from the schedule.
+func TestACPPeerServerRunsBotSchedulesWhileDetached(t *testing.T) {
+	workspace := writeACPPeerWorkspace(t)
+	provider := newPeerACPProvider()
+	rt := newTestACPRuntime(t, workspace, provider)
+	rt.AgentsDirs = []string{filepath.Join(workspace, ".caretz", "agents")}
+	launch, err := preparePeerLaunch(rt, "reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = launch.lock.Release() }()
+	server, err := NewACPServer(rt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acp := server.(*acpServer)
+	acp.peer = launch
+	_, stop := serveInBackground(t, acp)
+
+	var scheduler *schedules.Integration
+	deadline := time.Now().Add(5 * time.Second)
+	for scheduler == nil && time.Now().Before(deadline) {
+		if session := acp.getSession("reviewer"); session != nil {
+			if integration, ok := session.session.Integration(schedules.IntegrationName); ok {
+				scheduler, _ = integration.(*schedules.Integration)
+			}
+		}
+		if scheduler == nil {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if scheduler == nil {
+		t.Fatal("the bot has no scheduler")
+	}
+	at := time.Now().Add(2 * time.Second).UTC().Format(time.RFC3339)
+	if _, err := scheduler.Register(t.Context(), "at:"+at, "check the watchlist"); err != nil {
+		t.Fatal(err)
+	}
+	provider.waitForPrompt(t, "check the watchlist")
+	// A run's status is recorded once its report turn has ended.
+	deadline = time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if jobs := scheduler.List(); len(jobs) == 0 || jobs[0].LastStatus != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	frames := turnFrames(stop())
+	sources := []any{}
+	for _, frame := range frames {
+		if frame.kind == "caretz/turn_started" {
+			sources = append(sources, frame.update["source"])
+		}
+	}
+	if !slices.Contains(sources, any("schedule")) {
+		t.Fatalf("detached bot turn sources = %v, want a schedule turn", sources)
 	}
 }
 

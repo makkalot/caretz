@@ -429,7 +429,9 @@ func (a *AgentSession) runAsyncCommand(ctx context.Context, request eventing.Asy
 	}
 	left := budget.left()
 	finishOwnedWork(ctx)
-	err = a.runAsyncTurn(a.lifecycleCtx, func(ctx context.Context, stop <-chan struct{}) error {
+	// The report turn outlives the run's context but keeps its request, so the
+	// report is recorded, and shown to clients, as coming from the run's source.
+	err = a.runAsyncTurn(sessiontools.WithAsyncRequest(a.lifecycleCtx, request), func(ctx context.Context, stop <-chan struct{}) error {
 		turnCtx, cancel := budget.modelContext(ctx, left)
 		defer cancel()
 		_, err := a.callUntilStopUnlocked(turnCtx, asyncCommandReport(request, result), stop)
@@ -948,7 +950,8 @@ func (a *AgentSession) runAsyncSubagent(ctx context.Context, request eventing.As
 	// once the lock is held, so waiting for a user turn is not charged.
 	left := budget.left()
 	finishOwnedWork(ctx)
-	return a.runAsyncTurn(a.lifecycleCtx, func(ctx context.Context, stop <-chan struct{}) error {
+	// As in runAsyncCommand, the report turn keeps the run's request.
+	return a.runAsyncTurn(sessiontools.WithAsyncRequest(a.lifecycleCtx, request), func(ctx context.Context, stop <-chan struct{}) error {
 		turnCtx, cancel := budget.modelContext(ctx, left)
 		defer cancel()
 		_, err := a.callUntilStopUnlocked(turnCtx, fmt.Sprintf("Background task completed.\n\nChild session ID: %s\n\nTask:\n%s\n\nResult:\n%s\n\nReport the result to the user concisely.", child.ChannelID(), task, result), stop)

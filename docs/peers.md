@@ -206,6 +206,20 @@ other forever:
 - every exchange carries a hop count, and `SendMessage` refuses to go more than
   four hops from the turn that started the chain.
 
+## Give it a schedule
+
+A bot keeps running, so it is a good home for [schedules](schedules/_index.md).
+Ask it directly, in its own pane or from an ACP client attached to it:
+
+```text
+Every day at 09:00, check the prices on the watchlist and tell me what dropped.
+```
+
+The schedule belongs to the bot's session. It fires whether or not anyone is
+attached, and resumes when the bot restarts. Each run's result arrives as a
+turn in the bot's history; ACP clients see it with `source` set to
+`schedule`. Use `/schedule-list` in the bot to see and cancel its schedules.
+
 ## How it fits together
 
 Each bot and each interactive session owns its own session files, and only that

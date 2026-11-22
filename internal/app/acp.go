@@ -26,6 +26,7 @@ import (
 	"github.com/makkalot/caretz/internal/output"
 	"github.com/makkalot/caretz/internal/peers"
 	"github.com/makkalot/caretz/internal/sandbox"
+	"github.com/makkalot/caretz/internal/schedules"
 	"github.com/makkalot/caretz/internal/sessions"
 	"github.com/makkalot/caretz/internal/sessiontools"
 	"github.com/makkalot/caretz/internal/skills"
@@ -342,6 +343,12 @@ func (s *acpServer) openPeerSession() error {
 	s.sessionsMu.Lock()
 	s.sessions[name] = session
 	s.sessionsMu.Unlock()
+	// A bot keeps running whether or not a client is attached, so unlike an
+	// ordinary ACP session it can own schedules: they fire while it runs and
+	// resume with its session after a restart.
+	if err := session.session.InstallIntegration(schedules.NewIntegrationWithDefaults(scheduleDefaults(s.fileConfig().Operational().Schedules))); err != nil {
+		return fmt.Errorf("restore schedules for peer bot %s: %w", name, err)
+	}
 	if err := session.session.InstallIntegration(s.peer.integration(s.rt, s.rt.Logger)); err != nil {
 		return fmt.Errorf("start messaging for peer bot %s: %w", name, err)
 	}
@@ -1489,7 +1496,7 @@ func (s *acpServer) backgroundTurnRunner(acp *acpSession) agent.AsyncTurnRunner 
 
 		source := ""
 		if request, ok := sessiontools.AsyncRequestFromContext(ctx); ok {
-			source = request.Source
+			source = acpSource(request.Source)
 		}
 		info := s.beginTurn(acp, source, nil)
 		err := turn(turnCtx, background.stop)
@@ -1504,6 +1511,16 @@ func (s *acpServer) backgroundTurnRunner(acp *acpSession) agent.AsyncTurnRunner 
 
 // acpTurnSourcePrompt is the source of a turn a session/prompt started.
 const acpTurnSourcePrompt = "prompt"
+
+// acpSource is the source clients see for an async run's source. Schedules
+// record runs under their integration's name, which session history keeps
+// matching on; the protocol calls the source schedule.
+func acpSource(source string) string {
+	if source == schedules.IntegrationName {
+		return "schedule"
+	}
+	return source
+}
 
 // acpTurnInfo describes a session's running turn, prompted or not. Clients
 // see it as caretz/turn_started and caretz/turn_ended updates and as the
@@ -2699,7 +2716,7 @@ func acpUserContent(sessionID string, message eventing.LogMessage) map[string]an
 	if origin := message.Origin; origin != nil {
 		// Clients show a message a peer bot or schedule started as that
 		// source's, not the user's.
-		described := map[string]any{"source": origin.Source}
+		described := map[string]any{"source": acpSource(origin.Source)}
 		if origin.SourceID != "" {
 			described["sourceId"] = origin.SourceID
 		}
