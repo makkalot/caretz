@@ -1303,12 +1303,18 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 	}
 	runtimePath := sessionRuntimePath(s.rt.SessionsDir, adapter, id)
 	restoredSession := false
+	droppedModel := ""
 	if !s.rt.Incognito {
 		state, found, err := loadSessionRuntime(runtimePath)
 		if err != nil {
 			return nil, err
 		}
-		if found {
+		if found && s.peer != nil {
+			if runtimeSettings, droppedModel, err = restorePeerSession(fileConfig, policy, runtimeSettings, state, s.allowedModels); err != nil {
+				return nil, err
+			}
+			restoredSession = droppedModel == ""
+		} else if found {
 			if runtimeSettings, err = restoreRestrictedSession(fileConfig, policy, runtimeSettings, state, s.allowedModels); err != nil {
 				return nil, err
 			}
@@ -1326,6 +1332,9 @@ func (s *acpServer) openSession(id, cwd string) (*acpSession, error) {
 	}
 	if err := checkModelEndpoint(fileConfig, policy, runtimeSettings, s.rt.EndpointOverride, s.rt.EndpointOverrideSource); err != nil {
 		return nil, err
+	}
+	if droppedModel != "" {
+		switches = append(switches, droppedModelNotice(droppedModel, runtimeSettings))
 	}
 	if notice != "" {
 		switches = append(switches, notice)

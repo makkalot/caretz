@@ -229,7 +229,11 @@ When a bot restarts, it catches up on anything left unfinished:
 - messages it recorded but never ran get run;
 - results it never sent back get sent;
 - a turn that was cut off mid-run is reported to the sender as `interrupted`
-  instead of being run a second time.
+  instead of being run a second time;
+- if a [model rule](config/model-rules.md) or an allowed-model list no longer
+  allows the model the bot last used, the bot switches to the model a new
+  session would get and records the switch in its history. An ordinary session
+  refuses to reopen instead, but a bot has nobody to answer that error.
 
 ## Security
 

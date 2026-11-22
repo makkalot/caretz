@@ -171,13 +171,24 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 	adapterType := selectedAdapter
 	sessionRuntimeFile := sessionRuntimePath(sessionsDir, adapterType, sessionID)
 	restoredSession := false
+	droppedModel := ""
 	if !baseFlags.Incognito && strings.TrimSpace(baseFlags.Model) == "" && strings.TrimSpace(os.Getenv("OPENAI_API_MODEL")) == "" {
 		state, found, err := loadSessionRuntime(sessionRuntimeFile)
 		if err != nil {
 			output.Errorf(stderr, "%v", err)
 			return 1
 		}
-		if found {
+		if found && launch != nil {
+			if runtimeConfig, droppedModel, err = restorePeerSession(fileConfig, rt.ModelPolicy, runtimeConfig, state, nil); err != nil {
+				output.Errorf(stderr, "%v", err)
+				return 1
+			}
+			if droppedModel == "" {
+				applyExplicitSessionRuntimeOverrides(&runtimeConfig, rt.Settings, baseFlags, os.Getenv)
+				restoredSession = true
+			}
+			rt.Settings = runtimeConfig
+		} else if found {
 			restored, err := restoreRestrictedSession(fileConfig, rt.ModelPolicy, runtimeConfig, state, nil)
 			if err != nil {
 				output.Errorf(stderr, "%v", err)
@@ -239,6 +250,9 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 	if consentSummary != "" {
 		notice = consentSummary
 		rt.ModelRuleAnswered = true
+	}
+	if droppedModel != "" {
+		rt.ModelNotices = append(rt.ModelNotices, droppedModelNotice(droppedModel, runtimeConfig))
 	}
 	if notice != "" {
 		rt.ModelNotices = append(rt.ModelNotices, notice)
