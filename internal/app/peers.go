@@ -520,6 +520,9 @@ type PeerBotStatus struct {
 	// Revision fingerprints the bot's definition file, so a supervisor can
 	// tell when it changed and the bot needs a restart to pick it up.
 	Revision string
+	// Path is the definition file the bot loads from: the winning file when
+	// several agent directories define the same name.
+	Path string
 }
 
 // definitionRevision is the SHA-256 of a definition's file, or empty when it
@@ -556,6 +559,7 @@ func peerStatuses(configRoot, workspace string, defs []subagents.Definition) ([]
 			PID:         pid,
 			Queued:      runDir.PendingCount(endpoint),
 			Revision:    definitionRevision(def),
+			Path:        def.Path,
 		})
 	}
 	slices.SortFunc(statuses, func(a, b PeerBotStatus) int { return strings.Compare(a.Name, b.Name) })

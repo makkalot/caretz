@@ -73,6 +73,9 @@ func TestRuntimePeerBotsListsBotsWithState(t *testing.T) {
 	if writer.Name != "writer" || !writer.Running || writer.PID != os.Getpid() || writer.Queued != 1 {
 		t.Errorf("writer = %+v, want running in this process with 1 queued message", writer)
 	}
+	if want := filepath.Join(agents, "reviewer.md"); reviewer.Path != want {
+		t.Errorf("reviewer.Path = %q, want %q", reviewer.Path, want)
+	}
 	if dirs := runtime.AgentsDirs(); !slices.Contains(dirs, agents) {
 		t.Errorf("AgentsDirs() = %v, want it to include %s", dirs, agents)
 	}
