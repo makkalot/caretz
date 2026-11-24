@@ -673,8 +673,8 @@ func (s *acpServer) handleSessionList(params json.RawMessage) (any, *acpError) {
 	if s.peer != nil {
 		name := s.peer.def.Name
 		item := map[string]any{"sessionId": name, "title": "Peer bot " + name}
-		if info, err := os.Stat(filepath.Join(s.rt.SessionsDir, peerAdapter, name, "events.jsonpl")); err == nil {
-			item["updatedAt"] = info.ModTime().UTC().Format(time.RFC3339)
+		if updatedAt, ok := PeerSessionUpdatedAt(peerHistoryPath(s.rt.SessionsDir, name)); ok {
+			item["updatedAt"] = updatedAt
 		}
 		return map[string]any{"sessions": []map[string]any{item}}, nil
 	}

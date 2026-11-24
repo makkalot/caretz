@@ -165,6 +165,16 @@ func (r *Runtime) PeerBots() ([]PeerBot, error) {
 	return r.inner.PeerBots()
 }
 
+// PeerSessionUpdatedAt is the bot's session updatedAt exactly as session/list
+// reports it on the bot's ACP server, read from bot.HistoryPath without
+// running the bot. ok is false when the bot has no history yet.
+func PeerSessionUpdatedAt(bot PeerBot) (updatedAt string, ok bool) {
+	if bot.HistoryPath == "" {
+		return "", false
+	}
+	return caretzapp.PeerSessionUpdatedAt(bot.HistoryPath)
+}
+
 // AgentsDirs lists the directories the runtime loads agent definitions from,
 // in precedence order. Watch them to notice added, removed, or edited bots.
 func (r *Runtime) AgentsDirs() []string {

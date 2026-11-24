@@ -523,6 +523,25 @@ type PeerBotStatus struct {
 	// Path is the definition file the bot loads from: the winning file when
 	// several agent directories define the same name.
 	Path string
+	// HistoryPath is the event log of the bot's one session. It may not
+	// exist yet. PeerSessionUpdatedAt reads the session's updatedAt from it.
+	HistoryPath string
+}
+
+// peerHistoryPath is the event log of the named bot's session.
+func peerHistoryPath(sessionsDir, name string) string {
+	return filepath.Join(sessionsDir, peerAdapter, name, "events.jsonpl")
+}
+
+// PeerSessionUpdatedAt is a bot session's updatedAt as session/list reports
+// it: the event log's modification time in UTC, RFC 3339, whole seconds.
+// ok is false when the bot has no history yet.
+func PeerSessionUpdatedAt(historyPath string) (updatedAt string, ok bool) {
+	info, err := os.Stat(historyPath)
+	if err != nil {
+		return "", false
+	}
+	return info.ModTime().UTC().Format(time.RFC3339), true
 }
 
 // definitionRevision is the SHA-256 of a definition's file, or empty when it
@@ -573,7 +592,14 @@ func (rt *Runtime) PeerBots() ([]PeerBotStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	return peerStatuses(rt.ConfigRoot, rt.CWD, defs)
+	statuses, err := peerStatuses(rt.ConfigRoot, rt.CWD, defs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range statuses {
+		statuses[i].HistoryPath = peerHistoryPath(rt.SessionsDir, statuses[i].Name)
+	}
+	return statuses, nil
 }
 
 // peersCommand lists configured bots with their liveness and inbox depth.

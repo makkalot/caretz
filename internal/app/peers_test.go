@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/makkalot/caretz/internal/agent"
 	"github.com/makkalot/caretz/internal/config"
@@ -529,5 +530,26 @@ func TestPeerResumeCommandKeepsFlags(t *testing.T) {
 	got := launch.resumeCommand()
 	if len(got) != 5 || got[0] != caretCommandName() || got[1] != peerAdapter || got[2] != "reviewer" || got[3] != "--profile=foo" || got[4] != "--plan=true" {
 		t.Fatalf("resume command = %q", got)
+	}
+}
+
+func TestPeerSessionUpdatedAtMatchesSessionListFormat(t *testing.T) {
+	path := peerHistoryPath(t.TempDir(), "reviewer")
+	if updatedAt, ok := PeerSessionUpdatedAt(path); ok || updatedAt != "" {
+		t.Fatalf("without history = %q, %v; want nothing", updatedAt, ok)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Sub-second precision and a local zone must not leak into the value.
+	modified := time.Date(2026, 11, 24, 9, 30, 15, 987654321, time.FixedZone("x", 3600))
+	if err := os.Chtimes(path, modified, modified); err != nil {
+		t.Fatal(err)
+	}
+	if updatedAt, ok := PeerSessionUpdatedAt(path); !ok || updatedAt != "2026-11-24T08:30:15Z" {
+		t.Fatalf("updatedAt = %q, %v", updatedAt, ok)
 	}
 }

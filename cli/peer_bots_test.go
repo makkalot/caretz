@@ -76,6 +76,21 @@ func TestRuntimePeerBotsListsBotsWithState(t *testing.T) {
 	if want := filepath.Join(agents, "reviewer.md"); reviewer.Path != want {
 		t.Errorf("reviewer.Path = %q, want %q", reviewer.Path, want)
 	}
+	if reviewer.HistoryPath == "" || filepath.Base(filepath.Dir(reviewer.HistoryPath)) != "reviewer" {
+		t.Errorf("reviewer.HistoryPath = %q, want the reviewer session's log", reviewer.HistoryPath)
+	}
+	if updatedAt, ok := cli.PeerSessionUpdatedAt(reviewer); ok {
+		t.Errorf("updatedAt = %q for a bot without history", updatedAt)
+	}
+	if err := os.MkdirAll(filepath.Dir(reviewer.HistoryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(reviewer.HistoryPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if updatedAt, ok := cli.PeerSessionUpdatedAt(reviewer); !ok || updatedAt == "" {
+		t.Errorf("updatedAt = %q, %v once the bot has history", updatedAt, ok)
+	}
 	if dirs := runtime.AgentsDirs(); !slices.Contains(dirs, agents) {
 		t.Errorf("AgentsDirs() = %v, want it to include %s", dirs, agents)
 	}

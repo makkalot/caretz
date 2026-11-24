@@ -422,6 +422,10 @@ func TestACPPeerServerRunsBotAndAttachesClientOnLoad(t *testing.T) {
 	if len(sessions) != 1 || sessions[0].(map[string]any)["sessionId"] != "reviewer" {
 		t.Fatalf("session/list = %#v, want only the bot", sessions)
 	}
+	// The peer turn nobody prompted already dates the session.
+	if updatedAt, _ := sessions[0].(map[string]any)["updatedAt"].(string); updatedAt == "" {
+		t.Fatalf("session/list = %#v, want updatedAt after an unprompted turn", sessions)
+	}
 	if history := userChunkIndexes(lines, "review internal/peers"); len(history) != 1 || history[0] > loaded {
 		t.Fatalf("bot history not replayed before the load response: %v (load %d)", history, loaded)
 	}
