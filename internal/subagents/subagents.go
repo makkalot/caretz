@@ -8,8 +8,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/makkalot/caretz/internal/frontmatter"
+)
+
+const (
+	ModeSubagent = "subagent"
+	ModePeer     = "peer"
 )
 
 type Frontmatter struct {
@@ -21,6 +27,15 @@ type Frontmatter struct {
 	Permission  map[string]string
 	// Plan runs the agent in plan mode: no file edits, read-only Bash.
 	Plan bool
+	// Workspace confines a peer's writes to this directory; the main
+	// workspace stays readable. Peer-only.
+	Workspace string
+	// AcceptFrom limits which endpoints may message a peer. Peer-only.
+	AcceptFrom []string
+	// Profile selects the runtime profile a peer runs with. Peer-only.
+	Profile string
+	// RunTimeout caps each turn a message starts in a peer. Peer-only.
+	RunTimeout time.Duration
 }
 
 type Definition struct {
@@ -32,8 +47,36 @@ type Definition struct {
 	Temperature  *float64
 	Permission   map[string]string
 	Plan         bool
+	Workspace    string
+	AcceptFrom   []string
+	Profile      string
+	RunTimeout   time.Duration
 	SystemPrompt string
 	Path         string
+}
+
+// IsPeer reports whether the definition is a long-lived peer bot rather than
+// a fresh-child subagent.
+func (d Definition) IsPeer() bool { return d.Mode == ModePeer }
+
+// Subagents returns the definitions that run as fresh child sessions.
+func Subagents(defs []Definition) []Definition {
+	return filterMode(defs, false)
+}
+
+// Peers returns the definitions that run as long-lived peer bots.
+func Peers(defs []Definition) []Definition {
+	return filterMode(defs, true)
+}
+
+func filterMode(defs []Definition, peer bool) []Definition {
+	out := make([]Definition, 0, len(defs))
+	for _, def := range defs {
+		if def.IsPeer() == peer {
+			out = append(out, def)
+		}
+	}
+	return out
 }
 
 func AgentsDir(cwd string) string {
@@ -225,6 +268,10 @@ func LoadFile(path string) (Definition, error) {
 		Temperature:  fm.Temperature,
 		Permission:   fm.Permission,
 		Plan:         fm.Plan,
+		Workspace:    fm.Workspace,
+		AcceptFrom:   fm.AcceptFrom,
+		Profile:      fm.Profile,
+		RunTimeout:   fm.RunTimeout,
 		SystemPrompt: body,
 		Path:         absPath,
 	}, nil
@@ -241,6 +288,9 @@ func Parse(content []byte) (Frontmatter, string, error) {
 		Model:       strings.TrimSpace(parsed.Fields["model"]),
 		Reasoning:   strings.TrimSpace(parsed.Fields["reasoning"]),
 		Permission:  parsed.Maps["permission"],
+		Workspace:   strings.TrimSpace(parsed.Fields["workspace"]),
+		AcceptFrom:  splitList(parsed.Fields["accept_from"]),
+		Profile:     strings.TrimSpace(parsed.Fields["profile"]),
 	}
 	if temperature := strings.TrimSpace(parsed.Fields["temperature"]); temperature != "" {
 		value, err := strconv.ParseFloat(temperature, 64)
@@ -256,16 +306,40 @@ func Parse(content []byte) (Frontmatter, string, error) {
 		}
 		fm.Plan = value
 	}
+	if value := strings.TrimSpace(parsed.Fields["run_timeout"]); value != "" {
+		timeout, err := time.ParseDuration(value)
+		if err != nil || timeout <= 0 {
+			return Frontmatter{}, "", fmt.Errorf("frontmatter run_timeout must be a positive duration such as 45m or 2h")
+		}
+		fm.RunTimeout = timeout
+	}
 	if fm.Description == "" {
 		return Frontmatter{}, "", fmt.Errorf("frontmatter missing required field: description")
 	}
-	if fm.Mode != "subagent" {
-		return Frontmatter{}, "", fmt.Errorf("frontmatter mode must be subagent")
+	switch fm.Mode {
+	case ModeSubagent:
+		if fm.Workspace != "" || len(fm.AcceptFrom) > 0 || fm.Profile != "" || fm.RunTimeout != 0 {
+			return Frontmatter{}, "", fmt.Errorf("frontmatter workspace, accept_from, profile, and run_timeout require mode: peer")
+		}
+	case ModePeer:
+	default:
+		return Frontmatter{}, "", fmt.Errorf("frontmatter mode must be subagent or peer")
 	}
 	if parsed.Body == "" {
 		return Frontmatter{}, "", fmt.Errorf("subagent prompt body must not be empty")
 	}
 	return fm, parsed.Body, nil
+}
+
+// splitList parses a comma-separated scalar such as "root, planner".
+func splitList(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 // DisabledTools lists the tools an agent's permission map turns off.

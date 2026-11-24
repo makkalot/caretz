@@ -43,6 +43,9 @@ the command is always `caretz acp`.
   prompt.
 - **Saved sessions.** Threads are stored under `.caretz/sessions/acp/` and can
   be listed and reopened from the editor.
+- **[Peer bots](peers.md).** In a workspace that defines bots, the agent can
+  hand them work with `SendMessage`. A bot's reply shows up in the thread as
+  a new message and the agent answers it, even when you haven't sent anything.
 - **The same sandbox.** Commands run sandboxed exactly as in the terminal.
   Approving a command to [run outside the sandbox](sandboxing/escalation.md)
   works too, but without a terminal `sudo` can't ask for a password.
@@ -84,6 +87,53 @@ start in a directory no [model rule](config/model-rules.md) covers, caretz
 prints a warning and continues, and switching to a model a rule blocks is
 refused. Write `modelRules` for the projects you open in the editor, or send
 `/allow-model provider/model` from the editor's prompt to allow one there.
+
+## Turns You Didn't Start
+
+A bot's reply, a schedule, or a finished background job can start a turn while
+you're idle. Its message and the agent's answer stream into the thread like a
+normal turn. No `session/prompt` response ends such a turn, so caretz brackets
+every turn, prompted or not, with two extra updates that clients can use to
+show and clear a busy state:
+
+```text
+{"sessionUpdate":"caretz/turn_started","turnId":"…","source":"peer","startedAt":"2026-11-21T10:14:03Z"}
+{"sessionUpdate":"caretz/turn_ended","turnId":"…","source":"peer","startedAt":"…","stopReason":"end_turn"}
+```
+
+- `source` is `prompt` for a turn a `session/prompt` started, otherwise what
+  started it, such as `peer` or `schedule`. A prompted turn also carries
+  `promptRequestId`, the JSON-RPC id of its `session/prompt`.
+- `turn_started` follows the turn's user message. For a prompt,
+  `turn_ended` comes right before the prompt response.
+- `stopReason` is `end_turn`, `cancelled`, or `error` (with an `error` field).
+
+The updates are live only; history doesn't replay them. A [peer bot](peers.md)
+served with `caretz acp --peer` sends them even while no client has its
+session open, so whatever runs the bot can tell when it's busy; it sends no
+other updates until a client loads the session. Instead, the results
+of `session/new`, `session/load`, and `session/resume` carry `activeTurn`:
+`null` when nothing runs, or the running turn's `turnId`, `source`,
+`startedAt`, and `promptRequestId`. A client that opens a session mid-turn,
+for example after a restart, can show it busy and match the prompt response
+by `promptRequestId`.
+
+The message that starts a turn nobody typed shows the text meant for people,
+and its `_meta.caretz.origin` says where it came from, live and in history:
+
+```text
+{"type":"text","text":"Found two issues in spool.go…","_meta":{"caretz":{"origin":
+  {"source":"peer","sourceId":"<message id>","from":"reviewer","messageId":"<message id>",
+   "inReplyTo":"<your message id>","status":"succeeded"}}}}
+```
+
+`inReplyTo` and `status` appear only on a reply. The model still reads the
+message with its framing.
+
+A turn you didn't start waits for any running prompt, and a prompt sent
+during one waits for it. When no prompt is running, the editor's stop action
+cancels it. Nobody can approve anything during it, so a command that needs
+approval is refused.
 
 ## When It Doesn't Work
 

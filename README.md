@@ -101,6 +101,7 @@ How do i use it daily  ?
 
 - skills
 - subagents (sequential)
+- [peer bots](docs/peers.md): long-lived agents you message asynchronously and can attach to
 - openai compat api 
 - configurable tools and a strippable prompt
 - sandboxing (enabled by default, can be disabled)
@@ -173,7 +174,7 @@ The docs are split into small pages; browse them at
 - **Everyday use:** [Use caretz](docs/cli/_index.md) ·
   [Themes](docs/cli/themes.md) ·
   [Sessions](docs/sessions/_index.md) · [Goals](docs/goals/_index.md) ·
-  [Schedules](docs/schedules/_index.md)
+  [Schedules](docs/schedules/_index.md) · [Peer bots](docs/peers.md)
 - **Sandboxing:** [Overview](docs/sandboxing/_index.md) ·
   [Network](docs/sandboxing/network.md) · [Files](docs/sandboxing/files.md) ·
   [Run one command outside](docs/sandboxing/escalation.md)

@@ -114,6 +114,7 @@ func discoverPathCandidates(root string) []pathCandidate {
 func discoverSubagentCandidates(agentsDirs []string) []pathCandidate {
 	// Broken agent files are reported at startup; offer the ones that load.
 	defs, _ := subagents.DiscoverFromDirs(agentsDirs)
+	defs = subagents.Subagents(defs)
 	candidates := make([]pathCandidate, 0, len(defs))
 	for _, def := range defs {
 		candidate := newPathCandidate(def.Name, false)

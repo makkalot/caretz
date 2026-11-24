@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -320,6 +321,88 @@ func TestDirectoryModelRestoreAndSubagents(t *testing.T) {
 	}
 }
 
+func TestPeerRestoreDropsBlockedModel(t *testing.T) {
+	root := t.TempDir()
+	cfg := modelPolicyTestConfig(root, "http://localhost/v1")
+	policy, err := cfg.PolicyForWorkspace(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback := runtimeSettings{ActiveModelRef: "local/b", LLMMaxAttempts: 2}
+	for _, tc := range []struct {
+		state   sessionRuntimeState
+		adapter map[string]bool
+	}{
+		{state: sessionRuntimeState{ModelRef: "cloud/x"}},
+		{state: sessionRuntimeState{Model: "raw"}},
+		{state: sessionRuntimeState{ModelRef: "local/a"}, adapter: map[string]bool{"local/b": true}},
+	} {
+		got, dropped, err := restorePeerSession(cfg, policy, fallback, tc.state, tc.adapter)
+		want := tc.state.ModelRef + tc.state.Model
+		if err != nil || dropped != want || got.ActiveModelRef != "local/b" {
+			t.Fatalf("blocked peer restore of %s = %+v dropped=%q err=%v, want the fallback", want, got, dropped, err)
+		}
+	}
+	got, dropped, err := restorePeerSession(cfg, policy, fallback, sessionRuntimeState{ModelRef: "local/a", ReasoningEffort: "high"}, nil)
+	if err != nil || dropped != "" || got.ActiveModelRef != "local/a" || got.ReasoningEffort != "high" {
+		t.Fatalf("allowed peer restore = %+v dropped=%q err=%v, want the saved model", got, dropped, err)
+	}
+}
+
+// A bot whose saved model the adapter no longer allows, as when a gateway
+// workspace gains a models list, restarts on an allowed model instead of
+// exiting on every start.
+func TestACPPeerSessionReplacesModelTheAdapterNoLongerAllows(t *testing.T) {
+	workspace := writeACPPeerWorkspace(t)
+	url := "http://localhost/v1"
+	rt := newTestACPRuntime(t, workspace, newPeerACPProvider())
+	rt.AgentsDirs = []string{filepath.Join(workspace, ".caretz", "agents")}
+	rt.FileConfig = config.Config{ActiveModel: "local/b", Provider: map[string]config.Provider{
+		"local": {Options: config.ProviderOptions{BaseURL: &url}, Models: map[string]config.Model{"a": {Model: "qwen-a"}, "b": {Model: "qwen-b"}}},
+	}}
+	rt.Settings.ActiveModelRef, rt.Settings.Model, rt.Settings.BaseURL = "local/b", "qwen-b", url
+	runtimePath := sessionRuntimePath(rt.SessionsDir, peerAdapter, "reviewer")
+	if err := saveSessionRuntime(runtimePath, sessionRuntimeState{ModelRef: "local/a", WorkspaceDir: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	launch, err := preparePeerLaunch(rt, "reviewer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = launch.lock.Release() }()
+	server, err := NewACPServer(rt, []string{"local/b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	acp := server.(*acpServer)
+	acp.peer = launch
+
+	session, err := acp.openSession("reviewer", launch.workDir)
+	if err != nil {
+		t.Fatalf("bot with a blocked saved model failed to open: %v", err)
+	}
+	defer func() { _ = session.session.Close() }()
+	if session.activeModelRef != "local/b" {
+		t.Fatalf("bot model = %s, want the allowed local/b", session.activeModelRef)
+	}
+	notices, err := modelPolicyNotices(session.session)
+	if err != nil || !slices.Contains(notices, "model switched from local/a to local/b: local/a is no longer allowed here") {
+		t.Fatalf("recorded notices = %q err=%v", notices, err)
+	}
+	if state, _, err := loadSessionRuntime(runtimePath); err != nil || state.ModelRef != "local/b" {
+		t.Fatalf("saved model = %+v err=%v, want local/b", state, err)
+	}
+
+	// A root session on the same server still refuses the blocked model.
+	if err := saveSessionRuntime(sessionRuntimePath(rt.SessionsDir, acpAdapterType, "root"), sessionRuntimeState{ModelRef: "local/a", WorkspaceDir: workspace}); err != nil {
+		t.Fatal(err)
+	}
+	acp.peer = nil
+	if _, err := acp.openSession("root", workspace); err == nil || !strings.Contains(err.Error(), "resumed session") {
+		t.Fatalf("root session with a blocked saved model err=%v, want a refusal", err)
+	}
+}
+
 func TestDirectoryModelSubagentModelsAreRefused(t *testing.T) {
 	session := newTUISession(t, "subagent-validation")
 	cfg := modelPolicyTestConfig(session.WorkspaceDir(), "http://localhost/v1")
@@ -358,7 +441,7 @@ func TestDirectoryModelTUIShowsRuleAndReplaysSwitches(t *testing.T) {
 	_, stderrBuf, restore := setupTUIStreams(t, "/exit\n")
 	defer restore()
 	resources := startupResources{ModelRule: "model rule ~/src/a/c (config.json): allow [local/*]", ModelRulePath: "~/src/a/c"}
-	if err := startTUI(session, log.New(), "qwen-a", "local/a", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, resources, scheduleDefaults(nil), tuiHooks{}); err != nil {
+	if err := startTUI(session, log.New(), "qwen-a", "local/a", "general", t.TempDir(), nil, newTestRegistry(), nil, false, output.ModeCompact, true, "", false, resources, scheduleDefaults(nil), tuiHooks{}, tuiPeerOptions{}); err != nil {
 		t.Fatalf("startTUI() error = %v", err)
 	}
 	got := stderrBuf.String()

@@ -109,6 +109,41 @@ func finishOwnedWork(ctx context.Context) {
 	run.finish()
 }
 
+// AsyncTurnRunner runs a background turn on behalf of the session. An
+// interactive frontend installs one so background turns (schedules, peer
+// messages) get the same ESC, Ctrl-C, and permission prompts as typed turns.
+// It must call turn at most once and return turn's error; an error returned
+// without calling turn means the turn never ran.
+type AsyncTurnRunner func(ctx context.Context, turn func(ctx context.Context, stop <-chan struct{}) error) error
+
+// asyncTurnFrontend is an installed AsyncTurnRunner. ask reports whether
+// someone can answer permission prompts during the turns it runs.
+type asyncTurnFrontend struct {
+	run AsyncTurnRunner
+	ask bool
+}
+
+// SetAsyncTurnRunner installs runner for later background turns; nil restores
+// headless execution, where permission requests are denied immediately.
+func (a *AgentSession) SetAsyncTurnRunner(runner AsyncTurnRunner) {
+	a.setAsyncTurnFrontend(runner, true)
+}
+
+// SetUnattendedAsyncTurnRunner installs runner for a frontend that frames and
+// can stop background turns but cannot answer permission prompts, so those
+// turns still deny permission requests immediately.
+func (a *AgentSession) SetUnattendedAsyncTurnRunner(runner AsyncTurnRunner) {
+	a.setAsyncTurnFrontend(runner, false)
+}
+
+func (a *AgentSession) setAsyncTurnFrontend(runner AsyncTurnRunner, ask bool) {
+	if runner == nil {
+		a.asyncTurnRunner.Store(nil)
+		return
+	}
+	a.asyncTurnRunner.Store(&asyncTurnFrontend{run: runner, ask: ask})
+}
+
 func (a *AgentSession) PublishAsyncEvent(ctx context.Context, event *types.Event) error {
 	if a == nil || a.eventSessionStore == nil {
 		return fmt.Errorf("agent session audit store is required")
@@ -309,8 +344,11 @@ func (a *AgentSession) executeAsyncEvent(event *types.Event) {
 
 	switch request.Mode {
 	case "", eventing.AsyncRunForeground:
-		err = a.withExecutionContext(ctx, func() error {
-			_, err := a.callUntilStopUnlocked(ctx, request.Prompt, nil)
+		err = a.runAsyncTurn(ctx, func(ctx context.Context, stop <-chan struct{}) error {
+			response, err := a.callUntilStopUnlocked(ctx, request.Prompt, stop)
+			if err == nil {
+				result.Response = responseText(response)
+			}
 			return err
 		})
 	case eventing.AsyncRunSubagent:
@@ -342,6 +380,29 @@ func (a *AgentSession) withExecutionContext(ctx context.Context, run func() erro
 	return run()
 }
 
+// runAsyncTurn runs one background turn of this session under the execution
+// lock. With a frontend's AsyncTurnRunner installed, the frontend runs it, so
+// the turn gets the same ESC, Ctrl-C, and permission prompts as a typed one.
+func (a *AgentSession) runAsyncTurn(ctx context.Context, turn func(ctx context.Context, stop <-chan struct{}) error) error {
+	frontend := a.asyncTurnRunner.Load()
+	if frontend == nil {
+		return a.withExecutionContext(ctx, func() error { return turn(ctx, nil) })
+	}
+	return frontend.run(ctx, func(frontendCtx context.Context, stop <-chan struct{}) error {
+		// Either the run's own deadline or the frontend (Ctrl-C) ends it.
+		turnCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		defer context.AfterFunc(frontendCtx, cancel)()
+		return a.withExecutionContext(turnCtx, func() error {
+			if !frontend.ask {
+				return turn(turnCtx, stop)
+			}
+			// Someone is at the terminal to answer, so ask instead of denying.
+			return turn(tools.WithPermissionRequester(turnCtx, a.requestPermission), stop)
+		})
+	})
+}
+
 // ErrCommandNeedsSandbox refuses a background command in a session whose
 // sandbox is disabled: unattended commands never run on the host.
 var ErrCommandNeedsSandbox = errors.New("background commands need the sandbox, which is disabled for this session")
@@ -368,10 +429,12 @@ func (a *AgentSession) runAsyncCommand(ctx context.Context, request eventing.Asy
 	}
 	left := budget.left()
 	finishOwnedWork(ctx)
-	err = a.withExecutionContext(a.lifecycleCtx, func() error {
-		turnCtx, cancel := budget.modelContext(a.lifecycleCtx, left)
+	// The report turn outlives the run's context but keeps its request, so the
+	// report is recorded, and shown to clients, as coming from the run's source.
+	err = a.runAsyncTurn(sessiontools.WithAsyncRequest(a.lifecycleCtx, request), func(ctx context.Context, stop <-chan struct{}) error {
+		turnCtx, cancel := budget.modelContext(ctx, left)
 		defer cancel()
-		_, err := a.callUntilStopUnlocked(turnCtx, asyncCommandReport(request, result), nil)
+		_, err := a.callUntilStopUnlocked(turnCtx, asyncCommandReport(request, result), stop)
 		return timeoutError(turnCtx, err)
 	})
 	if err == nil && result.TimedOut {
@@ -446,7 +509,7 @@ func asyncStatus(err error, ctx context.Context) string {
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "timed_out"
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) || errors.Is(err, ErrGracefulStop) {
 		return "cancelled"
 	}
 	return "failed"
@@ -887,10 +950,11 @@ func (a *AgentSession) runAsyncSubagent(ctx context.Context, request eventing.As
 	// once the lock is held, so waiting for a user turn is not charged.
 	left := budget.left()
 	finishOwnedWork(ctx)
-	return a.withExecutionContext(a.lifecycleCtx, func() error {
-		turnCtx, cancel := budget.modelContext(a.lifecycleCtx, left)
+	// As in runAsyncCommand, the report turn keeps the run's request.
+	return a.runAsyncTurn(sessiontools.WithAsyncRequest(a.lifecycleCtx, request), func(ctx context.Context, stop <-chan struct{}) error {
+		turnCtx, cancel := budget.modelContext(ctx, left)
 		defer cancel()
-		_, err := a.callUntilStopUnlocked(turnCtx, fmt.Sprintf("Background task completed.\n\nChild session ID: %s\n\nTask:\n%s\n\nResult:\n%s\n\nReport the result to the user concisely.", child.ChannelID(), task, result), nil)
+		_, err := a.callUntilStopUnlocked(turnCtx, fmt.Sprintf("Background task completed.\n\nChild session ID: %s\n\nTask:\n%s\n\nResult:\n%s\n\nReport the result to the user concisely.", child.ChannelID(), task, result), stop)
 		return timeoutError(turnCtx, err)
 	})
 }

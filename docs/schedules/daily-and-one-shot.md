@@ -27,7 +27,8 @@ schedules the same way as loops: `/schedule-list`, then
   stay out of your conversation; Caretz then reports a short summary of the
   result.
 - Schedules are saved with the session. They run only while an interactive
-  session is open, not in `caretz -p`, and resume when you reopen the session.
+  session or a [peer bot](../peers.md#give-it-a-schedule) is running, not in
+  `caretz -p`, and resume when you reopen the session or the bot restarts.
 - If Caretz was closed through several due times, the schedule runs once for
   the latest one rather than catching up on each. A one-shot run that came due
   while Caretz was closed runs when you reopen the session.

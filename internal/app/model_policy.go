@@ -313,3 +313,30 @@ func restoreRestrictedSession(cfg config.Config, policy config.ModelPolicy, fall
 	}
 	return settingsForSessionRuntime(cfg, fallback, state)
 }
+
+// restorePeerSession reopens a peer bot's session like restoreRestrictedSession,
+// except that a saved model the workspace's rule or the adapter's allowed-model
+// restriction now blocks is dropped instead of refused. A bot restarts on its
+// own with nobody to read the error, so refusing would only exit it again until
+// its supervisor gives up. The bot then starts on the model a new session would
+// get, and dropped names the blocked model so the caller can record the switch.
+func restorePeerSession(cfg config.Config, policy config.ModelPolicy, fallback runtimeSettings, state sessionRuntimeState, adapter map[string]bool) (settings runtimeSettings, dropped string, err error) {
+	requested := state.ModelRef
+	if requested == "" {
+		requested = state.Model
+	}
+	if requireModel(cfg, policy, requested, adapter) != nil {
+		return fallback, requested, nil
+	}
+	settings, err = restoreRestrictedSession(cfg, policy, fallback, state, adapter)
+	return settings, "", err
+}
+
+// droppedModelNotice records that a bot's saved model was replaced on restart.
+func droppedModelNotice(dropped string, current runtimeSettings) string {
+	ref := current.ActiveModelRef
+	if ref == "" {
+		ref = current.Model
+	}
+	return fmt.Sprintf("model switched from %s to %s: %s is no longer allowed here", dropped, ref, dropped)
+}

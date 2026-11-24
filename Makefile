@@ -24,7 +24,7 @@ PROMPT ?=
 V ?=
 VFLAG := $(if $(V),-$(V),)
 
-.PHONY: help setup tidy ci doccheck build build-bench run test test-bench test-bench-daily fmt vet golangci-lint lint site-build site-serve clean install submit \
+.PHONY: help setup tidy ci doccheck build build-bench run test test-bench test-bench-daily fmt vet golangci-lint lint site-build site-serve clean install install-durable submit \
 	worktree worktree-from-branch worktree-from-remote \
 	build-linux-amd64 build-linux-arm64 build-jetson build-all run-linux test-linux test-docker \
 	test-sandbox-linux test-sandbox-darwin test-e2e test-e2e-linux e2e-features test-skills-e2e test-compaction-e2e
@@ -142,6 +142,10 @@ install: build
 	cp $(BINARY_PATH) $(HOME)/bin/$(BINARY_NAME)
 	@codesign --force --deep -s - $(HOME)/bin/$(BINARY_NAME) 2>/dev/null || true
 	@echo "Installed $(BINARY_NAME) to $(HOME)/bin/"
+
+## install-durable: Install this branch as ~/bin/caretz-durable alongside prod caretz
+install-durable:
+	@$(MAKE) install BINARY_NAME=caretz-durable
 
 ## build-linux-amd64: Cross-compile for linux/amd64
 build-linux-amd64:
