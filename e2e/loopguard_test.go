@@ -181,6 +181,34 @@ func TestLoopGuardGuardsAListedModel(t *testing.T) {
 		JudgeAsked(1)
 }
 
+func TestLoopGuardFallsBackWhenTheJudgeIsDown(t *testing.T) {
+	s := loopGuard.Scenario(t, "caretz judges on the session's model when the judge's server is down")
+	s.Describe("Nothing listens on the judge's port, so its requests are refused.")
+	s.Given().Config(`{
+  "provider": {
+    "down": {
+      "options": {"baseURL": "http://127.0.0.1:1/v1"},
+      "models": {"judge": {}}
+    }
+  },
+  "profiles": {
+    "general": {
+      "loopGuard": {"mode": "active", "judge": {"model": "down/judge"}}
+    }
+  }
+}`)
+	g := failsThreeTimes(s.Given())
+	g.
+		Model(story.JudgeFindsStuck(0.9, "testDB is declared behind a build tag.", "run go test with -tags integration")).
+		Model(story.Replies("testDB needs the integration tag"))
+	s.When().Ask("make the tests pass", "-v")
+	s.Then().
+		Succeeds().
+		JudgeAsked(1).
+		Stderr(story.Contains("[loop-guard] judge model down/judge unreachable")).
+		Note(story.Contains("run go test with -tags integration"))
+}
+
 func TestLoopGuardRejectsAnUnknownJudgeModel(t *testing.T) {
 	s := loopGuard.Scenario(t, "caretz refuses to start with a judge model it cannot find")
 	s.When().Ask("make the tests pass", "--loop-guard", "active", "--loop-guard-model", "nope/missing")

@@ -231,6 +231,10 @@ func (rt *Runtime) NewAdapterSession(adapterType, channelID string, opts Adapter
 		_ = session.Close()
 		return nil, fmt.Errorf("loop guard judge: %w", err)
 	}
+	if err := validateScheduleModels(rt.Ctx, session.AgentSession(), rt.FileConfig.Operational().Schedules); err != nil {
+		_ = session.Close()
+		return nil, err
+	}
 	// Adapters get the scheduler here so scheduled runs use the profile's
 	// schedules block; an integration installed later under the same name is
 	// ignored.

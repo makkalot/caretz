@@ -3,6 +3,7 @@ package schedules
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -113,7 +114,7 @@ func TestRegisterScheduleCommand(t *testing.T) {
 }
 
 func TestIntegrationPublishesCommandRunWithoutModel(t *testing.T) {
-	defaults := Defaults{Model: "local/small", Reasoning: "low", Limits: &eventing.ContextLimits{Context: 64000}}
+	defaults := Defaults{Model: "local/small", Reasoning: "low", Limits: &eventing.ContextLimits{Context: 64000}, FallbackModel: "cloud/mini"}
 	request := firstScheduledRequest(t, defaults, RegisterOptions{Mode: ModeCommand})
 	if request.Mode != eventing.AsyncRunCommand || request.Prompt != "check status" {
 		t.Fatalf("request = %#v, want a command run", request)
@@ -121,7 +122,7 @@ func TestIntegrationPublishesCommandRunWithoutModel(t *testing.T) {
 	if request.Timeout != DefaultRunTimeout || request.ModelTimeout != DefaultModelTimeout || request.CommandTimeoutSeconds != 15*60 {
 		t.Fatalf("request timeouts = %s/%s/%ds, want 30m run, 15m model, 15m command", request.Timeout, request.ModelTimeout, request.CommandTimeoutSeconds)
 	}
-	if request.Model != "" || request.ReasoningEffort != "" || request.ContextLimits != nil {
+	if request.Model != "" || request.ReasoningEffort != "" || request.ContextLimits != nil || request.Fallback != nil {
 		t.Fatalf("request = %#v, want no model settings on a command run", request)
 	}
 }
@@ -270,6 +271,14 @@ func TestIntegrationAppliesDefaultsToRunsWithoutModel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			request := firstScheduledRequest(t, tt.defaults, tt.options...)
+			// A run on a configured model falls back to the session's model.
+			wantFallback := "[]"
+			if tt.wantModel != "" {
+				wantFallback = "[{ }]"
+			}
+			if got := fmt.Sprint(request.Fallback); got != wantFallback {
+				t.Fatalf("fallback = %s, want %s", got, wantFallback)
+			}
 			if request.Model != tt.wantModel || request.ReasoningEffort != tt.wantReasoning {
 				t.Fatalf("model = %q reasoning = %q, want %q %q", request.Model, request.ReasoningEffort, tt.wantModel, tt.wantReasoning)
 			}
@@ -277,6 +286,20 @@ func TestIntegrationAppliesDefaultsToRunsWithoutModel(t *testing.T) {
 				t.Fatalf("limits = %#v, want %#v", request.ContextLimits, tt.wantLimits)
 			}
 		})
+	}
+}
+
+func TestIntegrationSetsFallbackChain(t *testing.T) {
+	defaults := Defaults{Model: "local/small", FallbackModel: "cloud/mini", FallbackReasoning: "low"}
+	request := firstScheduledRequest(t, defaults)
+	want := []eventing.AsyncRunModel{{Model: "cloud/mini", ReasoningEffort: "low"}, {}}
+	if fmt.Sprint(request.Fallback) != fmt.Sprint(want) {
+		t.Fatalf("fallback = %+v, want %+v", request.Fallback, want)
+	}
+	// A job already on the fallback model goes straight to the session's.
+	request = firstScheduledRequest(t, defaults, RegisterOptions{Model: "cloud/mini"})
+	if fmt.Sprint(request.Fallback) != "[{ }]" {
+		t.Fatalf("fallback = %+v, want only the session's model", request.Fallback)
 	}
 }
 

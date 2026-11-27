@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/makkalot/caretz/internal/turnscope"
 	"github.com/makkalot/caretz/internal/uuid"
 	"github.com/makkalot/caretz/lib/eventing"
+	"github.com/makkalot/caretz/lib/llm"
 	"github.com/makkalot/caretz/lib/types"
 )
 
@@ -825,6 +827,21 @@ func (a *AgentSession) startBackgroundSubagent(ctx context.Context, opts Subagen
 	return SubagentRunResult{Name: run.definition.Name, Task: task, ChildSessionID: run.child.ChannelID()}, nil
 }
 
+// announceUnreachableRunModel tells the user, once per session and model,
+// that a run's model could not be reached and the run is starting over on
+// the next one.
+func (a *AgentSession) announceUnreachableRunModel(source, from, to string, err error) {
+	from, to = cmp.Or(from, "the session's model"), cmp.Or(to, "the session's model")
+	a.logger.Info("%s: model %s unreachable, starting over on %s: %v", source, from, to, err)
+	if _, seen := a.asyncUnreachable.LoadOrStore(from, true); seen {
+		return
+	}
+	message := fmt.Sprintf("model %s unreachable, starting the run over on %s: %v", from, to, err)
+	if err := a.PublishAuditEvent(eventing.NewStatusUpdated(a.channelId, source, message)); err != nil {
+		a.logger.Warn("%s: failed to publish notice: %v", source, err)
+	}
+}
+
 // runAsyncSubagent runs the child and reports its result to the session.
 // prepared is the child built when the run was requested; without one it is
 // built here, which waits for any turn in progress.
@@ -862,15 +879,47 @@ func (a *AgentSession) runAsyncSubagent(ctx context.Context, request eventing.As
 	if request.PreviousRun != "" {
 		childTask = fmt.Sprintf("%s\n\nThe previous run of this task did not succeed. Change course if the same problem would recur:\n%s", task, request.PreviousRun)
 	}
-	callCtx, cancelCall := budget.modelContext(ctx, budget.left())
-	callCtx = child.withAutoDeniedPermissions(callCtx)
-	response, err := child.Call(callCtx, buildSubagentRunPrompt(definition, childTask, a.ChannelID(), run.resumed))
-	err = timeoutError(callCtx, err)
-	cancelCall()
-	if err != nil {
+	var response *llm.Response
+	attempt := request
+	for {
+		callCtx, cancelCall := budget.modelContext(ctx, budget.left())
+		callCtx = child.withAutoDeniedPermissions(callCtx)
+		var err error
+		response, err = child.Call(callCtx, buildSubagentRunPrompt(definition, childTask, a.ChannelID(), run.resumed))
+		err = timeoutError(callCtx, err)
+		cancelCall()
+		if err == nil {
+			break
+		}
 		a.appendAsyncChildStopped(run, ctx, err)
-		a.reportAsyncSubagentFailure(ctx, request, run, err)
-		return err
+		if !llm.IsUnreachable(err) || len(attempt.Fallback) == 0 || ctx.Err() != nil {
+			a.reportAsyncSubagentFailure(ctx, request, run, err)
+			return err
+		}
+		// The model's endpoint is down: start over on the next model with
+		// a fresh child, so it runs with that model's own limits.
+		from := attempt.Model
+		attempt.Model, attempt.ReasoningEffort = attempt.Fallback[0].Model, attempt.Fallback[0].ReasoningEffort
+		attempt.Fallback, attempt.ContextLimits, attempt.ResumeChild = attempt.Fallback[1:], nil, ""
+		a.announceUnreachableRunModel(request.Source, from, attempt.Model, err)
+		_ = child.Close()
+		if err := a.withExecutionContext(ctx, func() error {
+			var err error
+			run, err = a.newAsyncChild(ctx, attempt)
+			return err
+		}); err != nil {
+			return err
+		}
+		definition, child = run.definition, run.child
+		if err := a.appendAsyncChildStarted(run, attempt); err != nil {
+			return err
+		}
+		if request.Agent == "" {
+			if err := RegisterSubagentProgressHandlers(a, child, definition.Name); err != nil {
+				a.appendAsyncChildStopped(run, ctx, err)
+				return err
+			}
+		}
 	}
 	result := responseText(response)
 	if err := a.AppendAuditEvent(eventing.NewSubagentInvocationCompleted(a.ChannelID(), definition.Name, child.ChannelID(), a.ChannelID(), result, child.EstimatedContextTokens(), child.ContextWindow())); err != nil {

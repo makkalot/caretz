@@ -254,6 +254,10 @@ func runAgentCommand(ctx context.Context, parsed clicmd.ParsedOptions, values ag
 		output.Errorf(stderr, "loop guard judge: %v", err)
 		return 1
 	}
+	if err := validateScheduleModels(ctx, session, rt.FileConfig.Operational().Schedules); err != nil {
+		output.Errorf(stderr, "%v", err)
+		return 1
+	}
 	if !baseFlags.Incognito {
 		if err := saveSessionRuntime(sessionRuntimeFile, sessionRuntimeStateFromSettings(runtimeConfig, fileConfig.Profile)); err != nil {
 			output.Errorf(stderr, "%v", err)
