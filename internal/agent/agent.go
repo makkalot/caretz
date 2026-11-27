@@ -56,6 +56,7 @@ type AgentSession struct {
 	asyncPrepared           map[string]*asyncChild // by request ID; guarded by asyncOwnedMu
 	backgroundRuns          map[string]*asyncChild // by child session ID; guarded by asyncOwnedMu
 	backgroundWG            sync.WaitGroup         // one count per entry in backgroundRuns
+	asyncUnreachable        sync.Map               // run models already announced unreachable
 	reportMu                sync.Mutex
 	pendingReports          []*subagentReport
 	reportDraining          bool

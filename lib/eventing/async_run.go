@@ -34,6 +34,11 @@ type AsyncRunRequest struct {
 	Model           string         `json:"model,omitempty"`
 	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 	ContextLimits   *ContextLimits `json:"context_limits,omitempty"`
+	// Fallback lists the models an AsyncRunSubagent run starts over on, in
+	// order, when its model's endpoint cannot be reached. Each attempt is a
+	// fresh child with that model's own limits; ContextLimits apply only to
+	// Model. An empty model is the session's current model.
+	Fallback []AsyncRunModel `json:"fallback,omitempty"`
 	// Timeout bounds the whole run, apart from waiting for the session to
 	// finish another turn; zero uses the executor default.
 	Timeout time.Duration `json:"timeout,omitempty"`
@@ -47,6 +52,13 @@ type AsyncRunRequest struct {
 	// PreviousRun describes how the previous run from the same source ended
 	// when it did not succeed, so this run can change course.
 	PreviousRun string `json:"previous_run,omitempty"`
+}
+
+// AsyncRunModel is one model a run can use; an empty Model is the session's
+// current model.
+type AsyncRunModel struct {
+	Model           string `json:"model,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // ContextLimits override the token limits of the run's model. A zero field

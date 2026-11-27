@@ -72,6 +72,11 @@ type Config struct {
 	// session's current model.
 	JudgeModel     string
 	JudgeReasoning string
+	// JudgeFallbackModel and JudgeFallbackReasoning pick the model the judge
+	// asks when JudgeModel's endpoint cannot be reached; after it, the
+	// session's current model.
+	JudgeFallbackModel     string
+	JudgeFallbackReasoning string
 	// Models limits the guard to sessions running one of these models,
 	// written as provider/model refs with path.Match globs ("strata/*",
 	// "*/qwen*next*"); empty guards every model.

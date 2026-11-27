@@ -30,11 +30,39 @@ when each run starts, so changing it and reopening the session also changes
 schedules you already registered. `/schedule-list` shows the model each job
 will use.
 
+## When the Model Is Down
+
+If the scheduled model's endpoint can't be reached, say your local server is
+off, the run starts over on `fallback` and then on the session's current
+model, instead of failing:
+
+```json
+{
+  "profiles": {
+    "general": {
+      "schedules": {
+        "model": "local/qwen-code",
+        "limit": {"context": 64000},
+        "fallback": {"model": "chatgpt/gpt-6.1-sol", "reasoning": "low"}
+      }
+    }
+  }
+}
+```
+
+Each attempt is a fresh child with the task from the start, using its own
+model's configured limits; `limit` applies only to `model`. The run's
+`timeout` covers every attempt. You get one notice per session for each
+unreachable model. Only a failed connection moves on: an HTTP error or a
+timeout still fails the run.
+
 ## Rules
 
 - `model` is a configured `provider/model` ref. [Model rules](../config/model-rules.md)
   apply: a blocked model makes the run fail rather than switching to another.
-- `reasoning` needs `model`.
+  `model` and `fallback.model` are checked at startup, so an unknown or
+  blocked ref fails right away.
+- `reasoning` needs `model`, and `fallback.reasoning` needs `fallback.model`.
 - `limit` takes the same keys as a provider model's limits: `context`,
   `reservedTokens`, `keepRecentTokens` and `summaryTokens`. An unset key keeps
   the model's value. `context` may shrink the model's window but not exceed it,

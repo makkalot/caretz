@@ -1078,11 +1078,16 @@ func resolveLoopGuard(profile config.LoopGuard, flags loopGuardFlags, getenv fun
 	if profile.Judge != nil {
 		cfg.JudgeModel = strings.TrimSpace(profile.Judge.Model)
 		cfg.JudgeReasoning = strings.TrimSpace(profile.Judge.Reasoning)
+		if fallback := profile.Judge.Fallback; fallback != nil {
+			cfg.JudgeFallbackModel = strings.TrimSpace(fallback.Model)
+			cfg.JudgeFallbackReasoning = strings.TrimSpace(fallback.Reasoning)
+		}
 	}
-	// A flag model replaces the configured judge, reasoning included, since
-	// that reasoning value was chosen for the configured model.
+	// A flag model replaces the configured judge, reasoning and fallback
+	// included, since those were chosen for the configured model.
 	if model := strings.TrimSpace(flags.Model); model != "" {
 		cfg.JudgeModel, cfg.JudgeReasoning = model, ""
+		cfg.JudgeFallbackModel, cfg.JudgeFallbackReasoning = "", ""
 	}
 	if reasoning := strings.TrimSpace(flags.Reasoning); reasoning != "" {
 		cfg.JudgeReasoning = reasoning

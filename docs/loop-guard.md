@@ -78,10 +78,40 @@ caretz --loop-guard shadow --loop-guard-model anthropic/claude-opus-5-5 --loop-g
 
 `--loop-guard-model` replaces the configured judge, including its reasoning
 setting. `--loop-guard-reasoning` on its own changes the configured judge's
-reasoning. The judge model is checked at startup, so an unknown or blocked
-model fails right away. `CARETZ_LOOP_GUARD` and
+reasoning. The judge model and its [fallback](#keep-judging-when-the-judge-is-down)
+are checked at startup, so an unknown or blocked model fails right away. `CARETZ_LOOP_GUARD` and
 `--loop-guard` override the mode (`off`, `shadow` or `active`). The guard is
 off by default.
+
+## Keep Judging When the Judge Is Down
+
+A judge on a local server stops judging when that server is off. Give it a
+`fallback`, and when the judge's endpoint can't be reached, the same request
+goes to the fallback, then to the session's own model:
+
+```json
+{
+  "profiles": {
+    "general": {
+      "loopGuard": {
+        "mode": "active",
+        "judge": {
+          "model": "local/qwen-small",
+          "fallback": {"model": "chatgpt/gpt-6.1-sol", "reasoning": "low"}
+        }
+      }
+    }
+  }
+}
+```
+
+Without a `fallback`, an unreachable judge falls back straight to the
+session's model. You get one `[loop-guard]` notice per session for each
+unreachable model, and the `LoopGuard.Judged` event records which models were
+skipped in `fallback_from`. Only a failed connection moves on: an HTTP
+error, a timeout or an unreadable reply still counts as "not stuck". All
+attempts share one `judgeTimeout`. The fallback is set only in config, and
+`--loop-guard-model` drops it, along with the configured reasoning.
 
 ## Only Guard the Models That Loop
 
@@ -146,7 +176,8 @@ judge is asked again.
 The guard only sees tool calls. A model that spends a long time reasoning
 between calls without making them won't trigger it.
 
-The turn waits for the judge, up to `judgeTimeout`. A timeout, an error or an
+The turn waits for the judge, up to `judgeTimeout`. A judge that can't be
+reached hands the request to its fallback. A timeout, any other error or an
 unreadable reply counts as "not stuck", and the turn carries on as if the
 guard were off. Without a `judge` model the session's own model judges. A
 different model is better, because it is less likely to share the blind spot

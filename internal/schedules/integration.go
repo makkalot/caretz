@@ -29,11 +29,29 @@ const timeoutDescription = "Limit for a whole run, as a Go duration such as 45m;
 const modelTimeoutDescription = "Limit for each model phase of a run (the child agent, and the turn that reads the result), as a Go duration such as 20m; at most the run timeout. Defaults to 15m, or half the run timeout if that is less. For a command, the command gets the rest of the run timeout."
 
 // Defaults are the model settings of runs whose job sets none. They are
-// applied when a run starts, so jobs follow config changes.
+// applied when a run starts, so jobs follow config changes. FallbackModel and
+// FallbackReasoning pick the model a run starts over on when its model's
+// endpoint cannot be reached; after it comes the session's current model.
 type Defaults struct {
-	Model     string
-	Reasoning string
-	Limits    *eventing.ContextLimits
+	Model             string
+	Reasoning         string
+	Limits            *eventing.ContextLimits
+	FallbackModel     string
+	FallbackReasoning string
+}
+
+// fallback is the chain a run on model starts over on when model cannot be
+// reached: the configured fallback, then the session's current model. A run
+// already on the session's model has none.
+func (d Defaults) fallback(model string) []eventing.AsyncRunModel {
+	if model == "" {
+		return nil
+	}
+	var chain []eventing.AsyncRunModel
+	if d.FallbackModel != "" && d.FallbackModel != model {
+		chain = append(chain, eventing.AsyncRunModel{Model: d.FallbackModel, ReasoningEffort: d.FallbackReasoning})
+	}
+	return append(chain, eventing.AsyncRunModel{})
 }
 
 type Integration struct {
@@ -325,6 +343,7 @@ func (i *Integration) run(ctx context.Context, job Job) error {
 			model, reasoning = i.defaults.Model, i.defaults.Reasoning
 		}
 		request.Mode, request.Model, request.ReasoningEffort, request.ContextLimits = eventing.AsyncRunSubagent, model, reasoning, i.defaults.Limits
+		request.Fallback = i.defaults.fallback(model)
 	}
 	if err := i.gateway.PublishAsyncEvent(ctx, eventing.NewAsyncRunRequested(i.gateway.ChannelID(), request)); err != nil {
 		return err

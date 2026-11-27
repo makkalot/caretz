@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/makkalot/caretz/internal/loopguard"
@@ -19,10 +20,42 @@ const loopGuardSource = "loop-guard"
 // judge's provider and where verdicts and notices go. The loop itself only
 // sees these callbacks, so a guard failure never reaches the turn.
 type loopGuardHooks struct {
-	cfg           loopguard.Config
-	judgeProvider func(ctx context.Context) (llm.Provider, error)
+	cfg loopguard.Config
+	// judgeProvider resolves one model of the judge's chain; an empty ref
+	// is the session's current model.
+	judgeProvider func(ctx context.Context, ref, reasoning string) (llm.Provider, error)
 	record        func(record LoopGuardJudged)
 	notify        func(message string)
+	// unreachable holds the judge models already reported unreachable, so
+	// each is announced once per session.
+	unreachable sync.Map
+}
+
+// judgeModel is one model of the judge's chain; an empty ref is the
+// session's current model.
+type judgeModel struct{ ref, reasoning string }
+
+// judgeChain is the judge model, its fallback, then the session's current
+// model, without repeats. The judge moves down the chain only when a model's
+// endpoint cannot be reached.
+func judgeChain(cfg loopguard.Config) []judgeModel {
+	var chain []judgeModel
+	for _, m := range []judgeModel{{cfg.JudgeModel, cfg.JudgeReasoning}, {cfg.JudgeFallbackModel, cfg.JudgeFallbackReasoning}} {
+		if m.ref != "" && (len(chain) == 0 || chain[0].ref != m.ref) {
+			chain = append(chain, m)
+		}
+	}
+	return append(chain, judgeModel{})
+}
+
+func (m judgeModel) name(provider llm.Provider) string {
+	if m.ref != "" {
+		return m.ref
+	}
+	if provider != nil {
+		return "the session's model " + provider.GetModel()
+	}
+	return "the session's model"
 }
 
 // SetLoopGuard turns the loop guard on for this session's turns; child and
@@ -36,7 +69,7 @@ func (a *AgentSession) SetLoopGuard(cfg loopguard.Config) {
 	}
 	a.loopGuard = &loopGuardHooks{
 		cfg:           cfg.WithDefaults(),
-		judgeProvider: func(ctx context.Context) (llm.Provider, error) { return a.loopGuardJudgeProvider(ctx, cfg) },
+		judgeProvider: a.loopGuardJudgeProvider,
 		record: func(record LoopGuardJudged) {
 			payload, _ := json.Marshal(record)
 			if err := a.AppendAuditEvent(types.NewEvent(types.NewOriginator(a.channelId, 0), LoopGuardJudgedEvent, string(payload))); err != nil {
@@ -59,38 +92,46 @@ func (a *AgentSession) LoopGuard() loopguard.Config {
 	return loopguard.Config{Mode: loopguard.ModeOff}
 }
 
-// ValidateLoopGuard resolves the judge model without calling it, so an
-// unknown or blocked model fails at startup instead of at the first judgment.
+// ValidateLoopGuard resolves the judge model and its fallback without
+// calling them, so an unknown or blocked model fails at startup instead of
+// at the first judgment.
 func (a *AgentSession) ValidateLoopGuard(ctx context.Context) error {
 	cfg := a.LoopGuard()
-	if !cfg.Enabled() || cfg.JudgeModel == "" {
+	if !cfg.Enabled() {
 		return nil
 	}
-	if a.subagentModelResolver == nil {
-		return fmt.Errorf("loop guard: no model resolver for judge model %q", cfg.JudgeModel)
+	for _, m := range judgeChain(cfg) {
+		if m.ref == "" {
+			continue
+		}
+		if a.subagentModelResolver == nil {
+			return fmt.Errorf("loop guard: no model resolver for judge model %q", m.ref)
+		}
+		if _, err := a.subagentModelResolver.ResolveSubagentModel(ctx, SubagentModelRequest{
+			Name:            loopGuardSource,
+			WorkspaceDir:    a.WorkspaceDir(),
+			Ref:             m.ref,
+			ReasoningEffort: m.reasoning,
+			ValidateOnly:    true,
+		}); err != nil {
+			return err
+		}
 	}
-	_, err := a.subagentModelResolver.ResolveSubagentModel(ctx, SubagentModelRequest{
-		Name:            loopGuardSource,
-		WorkspaceDir:    a.WorkspaceDir(),
-		Ref:             cfg.JudgeModel,
-		ReasoningEffort: cfg.JudgeReasoning,
-		ValidateOnly:    true,
-	})
-	return err
+	return nil
 }
 
-func (a *AgentSession) loopGuardJudgeProvider(ctx context.Context, cfg loopguard.Config) (llm.Provider, error) {
-	if cfg.JudgeModel == "" {
+func (a *AgentSession) loopGuardJudgeProvider(ctx context.Context, ref, reasoning string) (llm.Provider, error) {
+	if ref == "" {
 		return a.currentProvider(), nil
 	}
 	if a.subagentModelResolver == nil {
-		return nil, fmt.Errorf("no model resolver for judge model %q", cfg.JudgeModel)
+		return nil, fmt.Errorf("no model resolver for judge model %q", ref)
 	}
 	resolution, err := a.subagentModelResolver.ResolveSubagentModel(ctx, SubagentModelRequest{
 		Name:            loopGuardSource,
 		WorkspaceDir:    a.WorkspaceDir(),
-		Ref:             cfg.JudgeModel,
-		ReasoningEffort: cfg.JudgeReasoning,
+		Ref:             ref,
+		ReasoningEffort: reasoning,
 	})
 	if err != nil {
 		return nil, err
@@ -197,6 +238,10 @@ type LoopGuardJudged struct {
 	Note string `json:"note,omitempty"`
 	// Digest is exactly what the judge was shown, for reviewing verdicts.
 	Digest string `json:"digest,omitempty"`
+	// FallbackFrom names the judge models skipped because their endpoints
+	// could not be reached, and FallbackReason the last one's error.
+	FallbackFrom   []string `json:"fallback_from,omitempty"`
+	FallbackReason string   `json:"fallback_reason,omitempty"`
 }
 
 const LoopGuardJudgedEvent = "LoopGuard.Judged"
@@ -250,9 +295,11 @@ func (t *turnLoopGuard) afterToolResult(ctx context.Context, a *AgentLoop, tc ll
 	digest := t.guard.Digest()
 	record := LoopGuardJudged{Mode: string(t.hooks.cfg.Mode), Trigger: trigger, Digest: digest}
 	start := time.Now()
-	verdict, model, usage, err := t.judge(ctx, digest)
+	result, err := t.judge(ctx, digest)
+	verdict := result.verdict
 	record.LatencyMS = time.Since(start).Milliseconds()
-	record.Model, record.Usage, record.Verdict = model, usage, verdict
+	record.Model, record.Usage, record.Verdict = result.model, result.usage, verdict
+	record.FallbackFrom, record.FallbackReason = result.fallbackFrom, result.fallbackReason
 	var action loopguard.Action
 	if err != nil {
 		record.Error = err.Error()
@@ -274,23 +321,69 @@ func (t *turnLoopGuard) afterToolResult(ctx context.Context, a *AgentLoop, tc ll
 	}
 }
 
-// judge asks the judge model for a verdict within the timeout. Any error,
-// including a malformed reply, is returned and treated as not stuck.
-func (t *turnLoopGuard) judge(ctx context.Context, digest string) (loopguard.Verdict, string, llm.Usage, error) {
+// judgeResult is one judgment: the verdict, the model that gave it, and the
+// models skipped on the way because their endpoints were unreachable.
+type judgeResult struct {
+	verdict loopguard.Verdict
+	model   string
+	usage   llm.Usage
+	// fallbackFrom names the unreachable models, in order, and
+	// fallbackReason the last one's error.
+	fallbackFrom   []string
+	fallbackReason string
+}
+
+// judge asks the judge's chain for a verdict within one timeout shared by
+// the whole chain. A model whose endpoint cannot be reached hands the same
+// request to the next one; any other error, including a malformed reply, is
+// returned and treated as not stuck.
+func (t *turnLoopGuard) judge(ctx context.Context, digest string) (judgeResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, t.hooks.cfg.JudgeTimeout)
 	defer cancel()
-	provider, err := t.hooks.judgeProvider(ctx)
-	if err != nil {
-		return loopguard.Verdict{}, "", llm.Usage{}, err
+	var result judgeResult
+	var lastErr error
+	// unreachableURLs skips a later model served from an endpoint that has
+	// already failed, such as the session's model on the same local server.
+	unreachableURLs := map[string]bool{}
+	chain := judgeChain(t.hooks.cfg)
+	for i, m := range chain {
+		provider, err := t.hooks.judgeProvider(ctx, m.ref, m.reasoning)
+		if err != nil {
+			return result, err
+		}
+		if unreachableURLs[provider.GetBaseURL()] {
+			continue
+		}
+		resp, err := llm.ChatContext(ctx, provider, loopguard.JudgeSystemPrompt, []llm.Message{{Role: llm.RoleUser, Content: digest}}, nil, func(string) {})
+		result.model, result.usage = provider.GetModel(), resp.Usage
+		if llm.IsUnreachable(err) {
+			lastErr = err
+			unreachableURLs[provider.GetBaseURL()] = true
+			result.fallbackFrom = append(result.fallbackFrom, m.name(provider))
+			result.fallbackReason = err.Error()
+			if i < len(chain)-1 {
+				t.announceUnreachable(m.name(provider), err)
+			}
+			continue
+		}
+		if err != nil {
+			return result, err
+		}
+		reply := resp.Message.Content
+		if reply == "" {
+			reply = resp.Content
+		}
+		result.verdict, err = loopguard.ParseVerdict(reply)
+		return result, err
 	}
-	resp, err := llm.ChatContext(ctx, provider, loopguard.JudgeSystemPrompt, []llm.Message{{Role: llm.RoleUser, Content: digest}}, nil, func(string) {})
-	if err != nil {
-		return loopguard.Verdict{}, provider.GetModel(), resp.Usage, err
+	return result, lastErr
+}
+
+// announceUnreachable tells the user once per session that a judge model
+// could not be reached and the judge moved on.
+func (t *turnLoopGuard) announceUnreachable(name string, err error) {
+	if _, seen := t.hooks.unreachable.LoadOrStore(name, true); seen {
+		return
 	}
-	reply := resp.Message.Content
-	if reply == "" {
-		reply = resp.Content
-	}
-	verdict, err := loopguard.ParseVerdict(reply)
-	return verdict, provider.GetModel(), resp.Usage, err
+	t.hooks.notify(fmt.Sprintf("judge model %s unreachable, using the fallback: %v", name, err))
 }

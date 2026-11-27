@@ -272,6 +272,49 @@ Feature: Catching a stuck turn
     Then caretz finishes successfully
     And caretz asked the loop guard's judge once
 
+  # Test: TestLoopGuardFallsBackWhenTheJudgeIsDown (e2e/loopguard_test.go)
+  Scenario: caretz judges on the session's model when the judge's server is down
+    Nothing listens on the judge's port, so its requests are refused.
+    Given my caretz config is:
+      """
+      {
+        "provider": {
+          "down": {
+            "options": {"baseURL": "http://127.0.0.1:1/v1"},
+            "models": {"judge": {}}
+          }
+        },
+        "profiles": {
+          "general": {
+            "loopGuard": {"mode": "active", "judge": {"model": "down/judge"}}
+          }
+        }
+      }
+      """
+    And the assistant runs:
+      """
+      echo 'db_test.go:12: undefined: testDB' >&2; exit 1
+      """
+    And the assistant runs:
+      """
+      echo 'db_test.go:12: undefined: testDB' >&2; exit 1
+      """
+    And the assistant runs:
+      """
+      echo 'db_test.go:12: undefined: testDB' >&2; exit 1
+      """
+    And the loop guard's judge finds the turn stuck (confidence 0.90):
+      """
+      reason: testDB is declared behind a build tag.
+      try instead: run go test with -tags integration
+      """
+    And the assistant replies "testDB needs the integration tag"
+    When I ask caretz "make the tests pass" with -v
+    Then caretz finishes successfully
+    And caretz asked the loop guard's judge once
+    And caretz's error output contains "[loop-guard] judge model down/judge unreachable"
+    And the note caretz added for the assistant contains "run go test with -tags integration"
+
   # Test: TestLoopGuardRejectsAnUnknownJudgeModel (e2e/loopguard_test.go)
   Scenario: caretz refuses to start with a judge model it cannot find
     When I ask caretz "make the tests pass" with --loop-guard active --loop-guard-model nope/missing

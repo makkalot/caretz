@@ -48,6 +48,25 @@ type startupResources struct {
 	Agents        []string
 }
 
+// validateScheduleModels resolves the schedules block's model and fallback
+// without calling them, so an unknown or blocked ref fails at startup
+// instead of at the first scheduled run.
+func validateScheduleModels(ctx context.Context, session *agent.AgentSession, cfg *config.Schedules) error {
+	defaults := scheduleDefaults(cfg)
+	for _, m := range []struct{ field, ref, reasoning string }{
+		{"schedules.model", defaults.Model, defaults.Reasoning},
+		{"schedules.fallback.model", defaults.FallbackModel, defaults.FallbackReasoning},
+	} {
+		if m.ref == "" {
+			continue
+		}
+		if err := session.ValidateSubagentModel(ctx, m.ref, m.reasoning); err != nil {
+			return fmt.Errorf("%s: %w", m.field, err)
+		}
+	}
+	return nil
+}
+
 // scheduleDefaults turns the profile's schedules block into the model
 // settings of scheduled runs.
 func scheduleDefaults(cfg *config.Schedules) schedules.Defaults {
@@ -55,6 +74,10 @@ func scheduleDefaults(cfg *config.Schedules) schedules.Defaults {
 		return schedules.Defaults{}
 	}
 	defaults := schedules.Defaults{Model: strings.TrimSpace(cfg.Model), Reasoning: strings.TrimSpace(cfg.Reasoning)}
+	if cfg.Fallback != nil {
+		defaults.FallbackModel = strings.TrimSpace(cfg.Fallback.Model)
+		defaults.FallbackReasoning = strings.TrimSpace(cfg.Fallback.Reasoning)
+	}
 	limit := func(value *int) int {
 		if value == nil {
 			return 0

@@ -450,6 +450,7 @@ func TestLoadRejectsInvalidSchedules(t *testing.T) {
 		`{"reasoning":"low"}`:                       "schedules.reasoning requires schedules.model",
 		`{"model":"local/a","limit":{"context":0}}`: "schedules.limit.context must be positive",
 		`{"limit":{"reservedTokens":-1}}`:           "schedules.limit.reservedTokens must be positive",
+		`{"fallback":{"reasoning":"low"}}`:          "schedules.fallback.reasoning requires schedules.fallback.model",
 	}
 	for schedules, want := range tests {
 		homePath := filepath.Join(t.TempDir(), "home.json")
@@ -464,7 +465,7 @@ func TestLoadLoopGuardMergesFieldsAcrossLayers(t *testing.T) {
 	tmp := t.TempDir()
 	homePath := filepath.Join(tmp, "home.json")
 	projectPath := filepath.Join(tmp, "project.json")
-	writeFile(t, homePath, `{"profiles":{"general":{"loopGuard":{"mode":"shadow","judgeTimeout":"20s","judge":{"model":"local/big"}}}}}`)
+	writeFile(t, homePath, `{"profiles":{"general":{"loopGuard":{"mode":"shadow","judgeTimeout":"20s","judge":{"model":"local/big","fallback":{"model":"cloud/mini"}}}}}}`)
 	writeFile(t, projectPath, `{"profiles":{"general":{"loopGuard":{"mode":"active","repeatThreshold":4,"models":["strata/*"]}}}}`)
 
 	cfg, err := Load(homePath, projectPath)
@@ -472,7 +473,7 @@ func TestLoadLoopGuardMergesFieldsAcrossLayers(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := cfg.Operational().LoopGuard
-	if g.Mode != "active" || g.RepeatThreshold == nil || *g.RepeatThreshold != 4 || g.JudgeTimeout.Duration != 20*time.Second || g.Judge == nil || g.Judge.Model != "local/big" || fmt.Sprint(g.Models) != "[strata/*]" {
+	if g.Mode != "active" || g.RepeatThreshold == nil || *g.RepeatThreshold != 4 || g.JudgeTimeout.Duration != 20*time.Second || g.Judge == nil || g.Judge.Model != "local/big" || g.Judge.Fallback == nil || g.Judge.Fallback.Model != "cloud/mini" || fmt.Sprint(g.Models) != "[strata/*]" {
 		t.Fatalf("LoopGuard = %#v", g)
 	}
 }
@@ -493,13 +494,14 @@ func TestModelRefsNamesRunningModel(t *testing.T) {
 
 func TestLoadRejectsInvalidLoopGuard(t *testing.T) {
 	tests := map[string]string{
-		`{"mode":"on"}`:                  "loopGuard.mode",
-		`{"repeatThreshold":1}`:          "loopGuard.repeatThreshold must be >= 2",
-		`{"judgeTimeout":"0s"}`:          "loopGuard.judgeTimeout must be positive",
-		`{"checkEvery":-1}`:              "loopGuard.checkEvery must be >= 0",
-		`{"judge":{"reasoning":"high"}}`: "loopGuard.judge.reasoning requires judge.model",
-		`{"models":["strata/[qwen"]}`:    "loopGuard.models",
-		`{"models":[""]}`:                "loopGuard.models",
+		`{"mode":"on"}`:                              "loopGuard.mode",
+		`{"repeatThreshold":1}`:                      "loopGuard.repeatThreshold must be >= 2",
+		`{"judgeTimeout":"0s"}`:                      "loopGuard.judgeTimeout must be positive",
+		`{"checkEvery":-1}`:                          "loopGuard.checkEvery must be >= 0",
+		`{"judge":{"reasoning":"high"}}`:             "loopGuard.judge.reasoning requires judge.model",
+		`{"judge":{"fallback":{"reasoning":"low"}}}`: "loopGuard.judge.fallback.reasoning requires judge.fallback.model",
+		`{"models":["strata/[qwen"]}`:                "loopGuard.models",
+		`{"models":[""]}`:                            "loopGuard.models",
 	}
 	for guard, want := range tests {
 		homePath := filepath.Join(t.TempDir(), "home.json")

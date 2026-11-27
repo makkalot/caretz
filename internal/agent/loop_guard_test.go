@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/makkalot/caretz/internal/log"
@@ -29,6 +31,8 @@ type loopGuardProvider struct {
 	judgeCalls []string
 	judgeReply string
 	judgeErr   error
+	// baseURL defaults to http://mock.
+	baseURL string
 }
 
 func (p *loopGuardProvider) Chat(systemPrompt string, messages []llm.Message, tools []llm.ToolDefinition, _ func(string)) (llm.Response, error) {
@@ -54,8 +58,18 @@ func (p *loopGuardProvider) Chat(systemPrompt string, messages []llm.Message, to
 	return llm.Response{ToolCalls: []llm.ToolCall{call}, Message: llm.Message{Role: llm.RoleAssistant, Content: say, ToolCalls: []llm.ToolCall{call}}}, nil
 }
 
-func (p *loopGuardProvider) GetModel() string   { return "loop-guard-mock" }
-func (p *loopGuardProvider) GetBaseURL() string { return "http://mock" }
+func (p *loopGuardProvider) GetModel() string { return "loop-guard-mock" }
+
+func (p *loopGuardProvider) GetBaseURL() string {
+	if p.baseURL != "" {
+		return p.baseURL
+	}
+	return "http://mock"
+}
+
+// errUnreachable is what a provider returns when its endpoint refuses the
+// connection.
+var errUnreachable = fmt.Errorf("LLM request failed after 3 attempts: %w", &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
 
 const stuckVerdict = `{"stuck": true, "confidence": 0.9, "reason": "Foo is never declared", "alternative": "add the missing import for Foo"}`
 
@@ -367,6 +381,161 @@ func TestLoopGuardJudgesOnConfiguredModel(t *testing.T) {
 	if len(requests) != 1 || requests[0].Ref != "judge/model" || requests[0].ReasoningEffort != "high" {
 		t.Fatalf("resolver requests = %+v", requests)
 	}
+}
+
+func TestLoopGuardFallsBackWhenJudgeUnreachable(t *testing.T) {
+	agentProvider := &loopGuardProvider{steps: 3, judgeReply: stuckVerdict, baseURL: "http://session"}
+	primary := &loopGuardProvider{judgeErr: errUnreachable, baseURL: "http://local"}
+	fallback := &loopGuardProvider{judgeReply: stuckVerdict, baseURL: "http://cloud"}
+	session := newLoopGuardSession(t, filepath.Join(t.TempDir(), "sessions"), agentProvider, []string{"undefined: Foo"})
+	session.SetSubagentModelResolver(subagentModelTestResolver{models: map[string]SubagentModelResolution{
+		"local/judge": {Provider: primary}, "cloud/judge": {Provider: fallback},
+	}})
+	session.SetLoopGuard(loopguard.Config{Mode: loopguard.ModeActive, JudgeModel: "local/judge", JudgeFallbackModel: "cloud/judge"})
+	var statuses []string
+	if err := session.OnAuditEvent(eventing.StatusUpdated, func(e *types.Event) error {
+		statuses = append(statuses, e.Payload)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := session.Call(context.Background(), "make the tests pass"); err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if len(primary.judgeCalls) != 1 || len(fallback.judgeCalls) != 1 || len(agentProvider.judgeCalls) != 0 {
+		t.Fatalf("judge calls: primary %d, fallback %d, session %d; want 1, 1, 0", len(primary.judgeCalls), len(fallback.judgeCalls), len(agentProvider.judgeCalls))
+	}
+	if primary.judgeCalls[0] != fallback.judgeCalls[0] {
+		t.Fatal("fallback was not sent the same digest")
+	}
+	records := loopGuardRecords(t, session)
+	if len(records) != 1 || records[0].Error != "" || !records[0].Redirected || fmt.Sprint(records[0].FallbackFrom) != "[local/judge]" || !strings.Contains(records[0].FallbackReason, "connection refused") {
+		t.Fatalf("records = %+v, want one redirect after falling back from local/judge", records)
+	}
+	var notices int
+	for _, status := range statuses {
+		if strings.Contains(status, "judge model local/judge unreachable") {
+			notices++
+		}
+	}
+	if notices != 1 {
+		t.Fatalf("statuses = %q, want one unreachable notice", statuses)
+	}
+}
+
+func TestLoopGuardJudgeChain(t *testing.T) {
+	unreachable := func(url string) *loopGuardProvider {
+		return &loopGuardProvider{judgeErr: errUnreachable, baseURL: url}
+	}
+	for name, tc := range map[string]struct {
+		session  *loopGuardProvider
+		models   map[string]*loopGuardProvider
+		cfg      loopguard.Config
+		wantErr  string
+		wantFrom string
+		// wantCalls is the judge calls each model got, session included.
+		wantCalls map[string]int
+	}{
+		"session model last": {
+			session:   &loopGuardProvider{judgeReply: stuckVerdict, baseURL: "http://session"},
+			models:    map[string]*loopGuardProvider{"local/judge": unreachable("http://local"), "cloud/judge": unreachable("http://cloud")},
+			cfg:       loopguard.Config{JudgeModel: "local/judge", JudgeFallbackModel: "cloud/judge"},
+			wantFrom:  "[local/judge cloud/judge]",
+			wantCalls: map[string]int{"local/judge": 1, "cloud/judge": 1, "session": 1},
+		},
+		"no fallback configured": {
+			session:   &loopGuardProvider{judgeReply: stuckVerdict, baseURL: "http://session"},
+			models:    map[string]*loopGuardProvider{"local/judge": unreachable("http://local")},
+			cfg:       loopguard.Config{JudgeModel: "local/judge"},
+			wantFrom:  "[local/judge]",
+			wantCalls: map[string]int{"local/judge": 1, "session": 1},
+		},
+		"all unreachable": {
+			session:   unreachable("http://session"),
+			models:    map[string]*loopGuardProvider{"local/judge": unreachable("http://local")},
+			cfg:       loopguard.Config{JudgeModel: "local/judge"},
+			wantErr:   "connection refused",
+			wantFrom:  "[local/judge the session's model loop-guard-mock]",
+			wantCalls: map[string]int{"local/judge": 1, "session": 1},
+		},
+		"same endpoint skipped": {
+			session:   &loopGuardProvider{judgeReply: stuckVerdict, baseURL: "http://local"},
+			models:    map[string]*loopGuardProvider{"local/judge": unreachable("http://local")},
+			cfg:       loopguard.Config{JudgeModel: "local/judge"},
+			wantErr:   "connection refused",
+			wantFrom:  "[local/judge]",
+			wantCalls: map[string]int{"local/judge": 1, "session": 0},
+		},
+		"reachable error does not fall back": {
+			session:   &loopGuardProvider{judgeReply: stuckVerdict, baseURL: "http://session"},
+			models:    map[string]*loopGuardProvider{"local/judge": {judgeErr: errors.New("500 Internal Server Error"), baseURL: "http://local"}},
+			cfg:       loopguard.Config{JudgeModel: "local/judge"},
+			wantErr:   "500",
+			wantFrom:  "[]",
+			wantCalls: map[string]int{"local/judge": 1, "session": 0},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			session := newLoopGuardSession(t, filepath.Join(t.TempDir(), "sessions"), tc.session, []string{"x"})
+			models := map[string]SubagentModelResolution{}
+			for ref, provider := range tc.models {
+				models[ref] = SubagentModelResolution{Provider: provider}
+			}
+			session.SetSubagentModelResolver(subagentModelTestResolver{models: models})
+			tc.cfg.Mode = loopguard.ModeActive
+			session.SetLoopGuard(tc.cfg)
+			guard := &turnLoopGuard{hooks: session.loopGuardHooks()}
+
+			result, err := guard.judge(context.Background(), "digest")
+			if tc.wantErr == "" && (err != nil || !result.verdict.Stuck) {
+				t.Fatalf("judge() = %+v, %v; want a stuck verdict", result, err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("judge() error = %v, want %q", err, tc.wantErr)
+			}
+			if got := fmt.Sprint(result.fallbackFrom); got != tc.wantFrom {
+				t.Fatalf("fallbackFrom = %s, want %s", got, tc.wantFrom)
+			}
+			for ref, want := range tc.wantCalls {
+				provider := tc.session
+				if ref != "session" {
+					provider = tc.models[ref]
+				}
+				if len(provider.judgeCalls) != want {
+					t.Fatalf("%s judge calls = %d, want %d", ref, len(provider.judgeCalls), want)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateLoopGuardResolvesFallbackModel(t *testing.T) {
+	session := newLoopGuardSession(t, filepath.Join(t.TempDir(), "sessions"), &mockProvider{}, []string{"x"})
+	session.SetSubagentModelResolver(subagentModelTestResolver{models: map[string]SubagentModelResolution{"judge/model": {Provider: &mockProvider{}}}})
+	session.SetLoopGuard(loopguard.Config{Mode: loopguard.ModeActive, JudgeModel: "judge/model", JudgeFallbackModel: "missing/model"})
+	if err := session.ValidateLoopGuard(context.Background()); err == nil || !strings.Contains(err.Error(), "missing/model") {
+		t.Fatalf("unknown fallback model: error = %v, want it named", err)
+	}
+}
+
+func loopGuardRecords(t *testing.T, session *AgentSession) []LoopGuardJudged {
+	t.Helper()
+	events, err := session.AuditEvents()
+	if err != nil {
+		t.Fatalf("AuditEvents() error = %v", err)
+	}
+	var records []LoopGuardJudged
+	for _, e := range events {
+		if e.EventType == LoopGuardJudgedEvent {
+			var record LoopGuardJudged
+			if err := json.Unmarshal([]byte(e.Payload), &record); err != nil {
+				t.Fatal(err)
+			}
+			records = append(records, record)
+		}
+	}
+	return records
 }
 
 func TestLoopGuardInheritedByChildSessions(t *testing.T) {

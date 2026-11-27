@@ -320,6 +320,37 @@ func TestDirectoryModelRestoreAndSubagents(t *testing.T) {
 	}
 }
 
+func TestValidateScheduleModels(t *testing.T) {
+	session := newTUISession(t, "schedule-validation")
+	cfg := modelPolicyTestConfig(session.WorkspaceDir(), "http://localhost/v1")
+	session.SetSubagentModelResolver(subagentModelResolver{fileConfig: cfg})
+	for name, tc := range map[string]struct {
+		schedules *config.Schedules
+		wantErr   string
+	}{
+		"unset":            {},
+		"session model":    {schedules: &config.Schedules{}},
+		"valid":            {schedules: &config.Schedules{Model: "local/a", Fallback: &config.GoalRole{Model: "local/b", Reasoning: "low"}}},
+		"bad model":        {schedules: &config.Schedules{Model: "missing/model"}, wantErr: "schedules.model"},
+		"bad fallback":     {schedules: &config.Schedules{Model: "local/a", Fallback: &config.GoalRole{Model: "missing/model"}}, wantErr: "schedules.fallback.model"},
+		"fallback only ok": {schedules: &config.Schedules{Fallback: &config.GoalRole{Model: "local/b"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateScheduleModels(t.Context(), session, tc.schedules)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("validateScheduleModels() error = %v", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("validateScheduleModels() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+	defaults := scheduleDefaults(&config.Schedules{Model: "local/a", Fallback: &config.GoalRole{Model: " local/b ", Reasoning: " low "}})
+	if defaults.FallbackModel != "local/b" || defaults.FallbackReasoning != "low" {
+		t.Fatalf("scheduleDefaults() = %+v, want the trimmed fallback", defaults)
+	}
+}
+
 func TestDirectoryModelSubagentModelsAreRefused(t *testing.T) {
 	session := newTUISession(t, "subagent-validation")
 	cfg := modelPolicyTestConfig(session.WorkspaceDir(), "http://localhost/v1")

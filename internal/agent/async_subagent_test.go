@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -313,4 +314,113 @@ func TestAsyncSubagentReportWaitDoesNotBlockScopeCleanup(t *testing.T) {
 	awaitAsyncSignal(t, stopped)
 	unlock.Do(session.executionMu.Unlock)
 	awaitAsyncResult(t, completed, "succeeded")
+}
+
+// countingAsyncProvider answers every request with reply, or fails with err,
+// and counts the requests it got.
+func countingAsyncProvider(model string, reply string, err error) (*asyncSubagentProvider, *int) {
+	var mu sync.Mutex
+	calls := 0
+	provider := &asyncSubagentProvider{subagentModelTestProvider: subagentModelTestProvider{model: model}, chat: func(context.Context, []llm.Message) (llm.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if err != nil {
+			return llm.Response{}, err
+		}
+		return asyncTestResponse(reply), nil
+	}}
+	return provider, &calls
+}
+
+func TestAsyncSubagentStartsOverOnFallbackWhenModelUnreachable(t *testing.T) {
+	local, localCalls := countingAsyncProvider("local-code", "", errUnreachable)
+	cloud, cloudCalls := countingAsyncProvider("cloud-mini", "cloud result", nil)
+	session := newAsyncSubagentTestSession(t, local, nil)
+	session.SetSubagentModelResolver(subagentModelTestResolver{models: map[string]SubagentModelResolution{
+		"local/code": {Model: "local-code", Provider: local, ContextWindow: 64000, ReservedTokens: 8000, KeepRecentTokens: 10000, SummaryTokens: 2000},
+		"cloud/mini": {Model: "cloud-mini", Provider: cloud, ContextWindow: 200000, ReservedTokens: 16384, KeepRecentTokens: 20000, SummaryTokens: 2000},
+	}})
+	started := subscribeAsyncTest(t, session, eventing.SubagentInvocationStarted)
+	statuses := subscribeAsyncTest(t, session, eventing.StatusUpdated)
+	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
+
+	request := eventing.AsyncRunRequest{
+		RequestID: "scheduled", Source: "schedules", Mode: eventing.AsyncRunSubagent, Prompt: "check the build", Timeout: 10 * time.Second,
+		Model: "local/code", ContextLimits: &eventing.ContextLimits{Context: 32000},
+		Fallback: []eventing.AsyncRunModel{{Model: "cloud/mini"}, {}},
+	}
+	if err := session.PublishAsyncEvent(context.Background(), eventing.NewAsyncRunRequested(session.ChannelID(), request)); err != nil {
+		t.Fatal(err)
+	}
+	awaitAsyncResult(t, completed, "succeeded")
+
+	if *localCalls != 1 || *cloudCalls != 1 {
+		t.Fatalf("calls: local %d, cloud %d; want 1, 1", *localCalls, *cloudCalls)
+	}
+	var invocations []eventing.SubagentInvocation
+	for len(invocations) < 2 {
+		select {
+		case event := <-started:
+			var invocation eventing.SubagentInvocation
+			if err := json.Unmarshal([]byte(event.Payload), &invocation); err != nil {
+				t.Fatal(err)
+			}
+			invocations = append(invocations, invocation)
+		case <-time.After(time.Second):
+			t.Fatalf("started events = %+v, want two", invocations)
+		}
+	}
+	// The first child ran with the schedule's limits, the fresh one with the
+	// fallback model's own.
+	if invocations[0].Model != "local/code" || invocations[0].ContextWindow != 32000 || invocations[1].Model != "cloud/mini" || invocations[1].ContextWindow != 200000 {
+		t.Fatalf("started = %+v, want local/code at 32000 then cloud/mini at 200000", invocations)
+	}
+	if invocations[0].ChildSessionID == invocations[1].ChildSessionID {
+		t.Fatal("fallback reused the failed child")
+	}
+	select {
+	case event := <-statuses:
+		if !strings.Contains(event.Payload, "local/code unreachable") || !strings.Contains(event.Payload, "cloud/mini") {
+			t.Fatalf("status = %s, want the unreachable notice", event.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no unreachable notice")
+	}
+}
+
+func TestAsyncSubagentFallsBackToSessionModel(t *testing.T) {
+	local, localCalls := countingAsyncProvider("local-code", "", errUnreachable)
+	session := newAsyncSubagentTestSession(t, local, nil)
+	session.SetSubagentModelResolver(subagentModelTestResolver{models: map[string]SubagentModelResolution{
+		"local/code": {Model: "local-code", Provider: local, ContextWindow: 64000, ReservedTokens: 8000, KeepRecentTokens: 10000, SummaryTokens: 2000},
+	}})
+	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
+	request := eventing.AsyncRunRequest{RequestID: "scheduled", Source: "schedules", Mode: eventing.AsyncRunSubagent, Prompt: "check the build", Timeout: 10 * time.Second, Model: "local/code", Fallback: []eventing.AsyncRunModel{{}}}
+	if err := session.PublishAsyncEvent(context.Background(), eventing.NewAsyncRunRequested(session.ChannelID(), request)); err != nil {
+		t.Fatal(err)
+	}
+	awaitAsyncResult(t, completed, "succeeded")
+	if *localCalls != 1 {
+		t.Fatalf("local calls = %d, want 1", *localCalls)
+	}
+}
+
+func TestAsyncSubagentFailsWhenEveryModelUnreachable(t *testing.T) {
+	local, localCalls := countingAsyncProvider("local-code", "", errUnreachable)
+	cloud, cloudCalls := countingAsyncProvider("cloud-mini", "", errUnreachable)
+	session := newAsyncSubagentTestSession(t, local, nil)
+	session.SetSubagentModelResolver(subagentModelTestResolver{models: map[string]SubagentModelResolution{
+		"local/code": {Model: "local-code", Provider: local, ContextWindow: 64000, ReservedTokens: 8000, KeepRecentTokens: 10000, SummaryTokens: 2000},
+		"cloud/mini": {Model: "cloud-mini", Provider: cloud, ContextWindow: 64000, ReservedTokens: 8000, KeepRecentTokens: 10000, SummaryTokens: 2000},
+	}})
+	completed := subscribeAsyncTest(t, session, eventing.AsyncRunCompleted)
+	request := eventing.AsyncRunRequest{RequestID: "scheduled", Source: "schedules", Mode: eventing.AsyncRunSubagent, Prompt: "check the build", Timeout: 10 * time.Second, Model: "local/code", Fallback: []eventing.AsyncRunModel{{Model: "cloud/mini"}}}
+	if err := session.PublishAsyncEvent(context.Background(), eventing.NewAsyncRunRequested(session.ChannelID(), request)); err != nil {
+		t.Fatal(err)
+	}
+	awaitAsyncResult(t, completed, "failed")
+	if *localCalls != 1 || *cloudCalls != 1 {
+		t.Fatalf("calls: local %d, cloud %d; want 1, 1", *localCalls, *cloudCalls)
+	}
 }

@@ -137,20 +137,36 @@ type LoopGuard struct {
 	CheckEvery   *int     `json:"checkEvery"`
 	JudgeTimeout Duration `json:"judgeTimeout"`
 	// Judge picks the judge's model; unset uses the session's current model.
-	Judge *GoalRole `json:"judge"`
+	Judge *LoopGuardJudge `json:"judge"`
 	// Models limits the guard to sessions on these provider/model refs
 	// (globs allowed); unset or empty guards every model.
 	Models []string `json:"models"`
 }
 
+// LoopGuardJudge is the judge's model. When its endpoint cannot be reached,
+// the judge asks Fallback, then the session's current model.
+type LoopGuardJudge struct {
+	Model     string    `json:"model"`
+	Reasoning string    `json:"reasoning"`
+	Fallback  *GoalRole `json:"fallback"`
+}
+
 // Schedules picks the model, reasoning and context limits of scheduled runs.
 // An unset model uses the session's current model; unset limits keep the
-// model's own. Values are read when a run starts, so existing schedules
-// follow config changes.
+// model's own. When the model's endpoint cannot be reached, the run starts
+// over on Fallback, then on the session's current model, each with its own
+// limits. Values are read when a run starts, so existing schedules follow
+// config changes.
 type Schedules struct {
-	Model     string `json:"model"`
-	Reasoning string `json:"reasoning"`
-	Limit     Limit  `json:"limit"`
+	Model     string    `json:"model"`
+	Reasoning string    `json:"reasoning"`
+	Limit     Limit     `json:"limit"`
+	Fallback  *GoalRole `json:"fallback"`
+}
+
+// fallbackRequiresModel reports a fallback that sets reasoning but no model.
+func fallbackRequiresModel(fallback *GoalRole) bool {
+	return fallback != nil && strings.TrimSpace(fallback.Reasoning) != "" && strings.TrimSpace(fallback.Model) == ""
 }
 
 type Sandbox struct {
@@ -1212,6 +1228,9 @@ func validateLoopGuard(guard LoopGuard, profile string) error {
 	if guard.Judge != nil && strings.TrimSpace(guard.Judge.Reasoning) != "" && strings.TrimSpace(guard.Judge.Model) == "" {
 		return fmt.Errorf("config profiles.%s.loopGuard.judge.reasoning requires judge.model", profile)
 	}
+	if guard.Judge != nil && fallbackRequiresModel(guard.Judge.Fallback) {
+		return fmt.Errorf("config profiles.%s.loopGuard.judge.fallback.reasoning requires judge.fallback.model", profile)
+	}
 	for _, pattern := range guard.Models {
 		if err := loopguard.ValidateModelPattern(pattern); err != nil {
 			return fmt.Errorf("config profiles.%s.loopGuard.models: %w", profile, err)
@@ -1260,6 +1279,9 @@ func validateSchedules(schedules *Schedules, profile string) error {
 	}
 	if strings.TrimSpace(schedules.Reasoning) != "" && strings.TrimSpace(schedules.Model) == "" {
 		return fmt.Errorf("config profiles.%s.schedules.reasoning requires schedules.model", profile)
+	}
+	if fallbackRequiresModel(schedules.Fallback) {
+		return fmt.Errorf("config profiles.%s.schedules.fallback.reasoning requires schedules.fallback.model", profile)
 	}
 	for _, limit := range []struct {
 		field string
